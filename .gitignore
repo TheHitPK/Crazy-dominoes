@@ -1,0 +1,15 @@
+# Caché de Godot (se regenera sola al abrir el proyecto)
+.godot/
+
+# Compilados
+*.apk
+*.apk.idsig
+*.aab
+build/
+
+# Notas de voz originales sin convertir
+audio/originales/
+
+# Registros del servidor al probarlo en este PC
+servidor/*.log
+servidor/*.err

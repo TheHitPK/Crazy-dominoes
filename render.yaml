@@ -1,0 +1,9 @@
+# Configuración para Render (https://render.com): al conectar este repositorio
+# como "Blueprint", Render crea el servicio con estos datos.
+services:
+  - type: web
+    name: crazy-dominoes
+    runtime: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    autoDeploy: true

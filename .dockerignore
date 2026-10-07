@@ -1,0 +1,5 @@
+# La imagen del servidor solo necesita project.godot, scenes/ y scripts/.
+*
+!project.godot
+!scenes
+!scripts

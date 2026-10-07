@@ -1,0 +1,23 @@
+Audios que suenan cuando un jugador pasa
+========================================
+
+Copia aquí tus archivos de audio. El nombre da igual. Puedes poner 3 o los que
+quieras.
+
+Formatos que Godot lee: .wav, .mp3 y .ogg en formato Vorbis.
+
+OJO con las notas de voz de WhatsApp o Telegram: vienen como .opus o como .ogg
+con audio Opus por dentro, y Godot NO las lee. Hay que convertirlas antes, por
+ejemplo con ffmpeg:
+
+    ffmpeg -i nota.opus -c:a libvorbis -q:a 5 paso_4.ogg
+
+Los originales sin convertir se guardan en audio/originales/ (Godot ignora esa
+carpeta).
+
+Cada vez que alguien pasa (tú, otro jugador o una CPU) suena uno al azar, sin
+repetir el mismo dos veces seguidas. Si la carpeta no tiene audios, suena el
+efecto de pase por defecto.
+
+Después de copiar archivos nuevos, abre el proyecto en Godot una vez para que
+los importe antes de exportar el APK.
