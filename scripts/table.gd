@@ -10,6 +10,10 @@ const SCREEN := Vector2(720, 1280)
 ## Margen extra arriba y abajo en pantallas más altas que 16:9 (casi todos los
 ## teléfonos). El contenido central sigue en y 0..1280; la mesa crece de -pad a 1280+pad.
 static var pad := 0.0
+## Margen extra a izquierda y derecha. Es 0 en el teléfono; la versión web en un
+## ordenador lo usa para ensanchar la mesa hasta hacerla cuadrada (ver main.gd).
+## El contenido central sigue en x 0..720; la mesa crece de -side a 720+side.
+static var side := 0.0
 ## Los posavasos de abajo van por encima de las fichas del jugador.
 const CUP_BOTTOM_RAISE := 160.0
 const FLOOR := Color(0.07, 0.055, 0.045)
@@ -28,7 +32,7 @@ const STYLES := [
 
 
 static func outer() -> Rect2:
-	return Rect2(10, 10.0 - pad, 700, 1260.0 + pad * 2.0)
+	return Rect2(10.0 - side, 10.0 - pad, 700.0 + side * 2.0, 1260.0 + pad * 2.0)
 
 
 static func style() -> Dictionary:
