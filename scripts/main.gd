@@ -10,6 +10,7 @@ extends Node
 ##   --play          salta el menú y empieza una partida normal
 ##   --diff=N        dificultad 0, 1 o 2 para --auto y --play
 ##   --customize     abre el menú con el panel de personalización
+##   --options       con --play o --auto, abre el panel de ajustes de la partida
 ##   --online        abre directamente la pantalla "Jugar con amigos"
 ##   --look=k:v,...  fuerza ajustes de aspecto, p. ej. --look=tile_style:1,hand_style:2
 ##   --speed=X       multiplica la velocidad del juego
@@ -22,11 +23,13 @@ extends Node
 ##   --net-code=TEST       código de sala para --net-join
 ##   --net-humans=N        el anfitrión empieza cuando haya N personas (por defecto 2)
 ##   --net-name=NOMBRE     nombre del jugador de prueba
+##   --net-token=CLAVE     clave del jugador (la misma clave recupera su asiento al volver)
 
 const Menu = preload("res://scripts/menu.gd")
 const Game = preload("res://scripts/game.gd")
 const Online = preload("res://scripts/online.gd")
 const Net = preload("res://scripts/net.gd")
+const AI = preload("res://scripts/domino_ai.gd")
 const Sfx = preload("res://scripts/sfx.gd")
 const Settings = preload("res://scripts/settings.gd")
 const Table = preload("res://scripts/table.gd")
@@ -59,6 +62,8 @@ func _ready() -> void:
 		net.serve_dedicated(int(args.get("--port", env_port if env_port != "" else str(Net.PORT))))
 		return
 
+	if OS.has_feature("web"):
+		AI.think_ms = 160
 	sfx = Sfx.new()
 	add_child(sfx)
 	var layer := CanvasLayer.new()
@@ -88,6 +93,8 @@ func _ready() -> void:
 		_net_test(args)
 	elif args.has("--auto") or args.has("--play"):
 		_switch(_make_game.bind(diff, args.has("--auto")))
+		if args.has("--options"):
+			current.call_deferred("_show_options")
 	elif args.has("--online"):
 		_switch(_make_online.bind(""))
 	else:
@@ -203,6 +210,8 @@ func _switch(maker: Callable) -> void:
 func _net_test(args: Dictionary) -> void:
 	var player: String = args.get("--net-name", "Prueba")
 	var humans := int(args.get("--net-humans", "2"))
+	# Cada cliente de prueba lleva su propia clave; repetirla simula al mismo jugador que vuelve.
+	var token: String = args.get("--net-token", "prueba-" + player)
 	var state := {"in_game": false, "tries": 0}
 	net.room_changed.connect(func(info: Dictionary) -> void:
 		var count := 0
@@ -213,16 +222,16 @@ func _net_test(args: Dictionary) -> void:
 		if info.host and not info.started and not state.in_game and count >= humans:
 			net.send("sv_start"))
 	net.game_event.connect(func() -> void:
-		if not state.in_game and not net.events.is_empty() and net.events[0].type == "hand_start":
+		if not state.in_game and not net.events.is_empty() and net.events[0].type in ["hand_start", "resume"]:
 			state.in_game = true
 			_switch(_make_net_game.bind(true)))
 	var connect_now := func() -> void:
 		if args.has("--net-host"):
-			net.host_lan(player, Settings.my_look(), 0)
+			net.host_lan(player, Settings.my_look(), 0, token)
 		elif args.has("--net-create"):
-			net.create_remote(args["--net-create"], player, Settings.my_look(), 0, "TEST")
+			net.create_remote(args["--net-create"], player, Settings.my_look(), 0, token, "TEST")
 		else:
-			net.join(args["--net-join"], args.get("--net-code", ""), player, Settings.my_look())
+			net.join(args["--net-join"], args.get("--net-code", ""), player, Settings.my_look(), token)
 	net.failed.connect(func(message: String) -> void:
 		print("[%s] fallo: %s" % [player, message])
 		# La sala puede no existir todavía: se reintenta unas cuantas veces.

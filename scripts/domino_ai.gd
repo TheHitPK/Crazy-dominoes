@@ -13,7 +13,9 @@ const State = preload("res://scripts/domino_state.gd")
 
 enum { EASY, MEDIUM, HARD }
 
-const THINK_MS := 450
+## Milisegundos que el nivel difícil dedica a simular cada jugada. En el
+## navegador se baja, porque allí piensa en el hilo principal y congela la imagen.
+static var think_ms := 450
 const MAX_WORLDS := 400
 
 
@@ -98,7 +100,7 @@ static func _monte_carlo(state: State, p: int, moves: Array, rng: RandomNumberGe
 			pool.append_array(state.hands[q])
 	var worlds := 0
 	var t0 := Time.get_ticks_msec()
-	while worlds < MAX_WORLDS and Time.get_ticks_msec() - t0 < THINK_MS:
+	while worlds < MAX_WORLDS and Time.get_ticks_msec() - t0 < think_ms:
 		var world: State = _sample_world(state, p, pool, rng)
 		for i in moves.size():
 			var s: State = world.clone()

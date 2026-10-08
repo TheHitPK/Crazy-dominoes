@@ -44,6 +44,8 @@ const CPU_LOOKS := [
 const CUP_OF := [3, 1, 0, 2]
 const GOLD := Color(1.0, 0.84, 0.3)
 const CREAM := Color(0.97, 0.93, 0.82)
+## Interruptores de sonido del panel de ajustes: clave en Settings.audio -> texto.
+const SOUND_OPTIONS := {"pass_voice": "Audios al pasar", "sfx": "Efectos de sonido", "music": "Música"}
 
 var difficulty: int = AI.MEDIUM
 ## Modo demostración: la CPU juega también tu mano.
@@ -99,6 +101,8 @@ var banner: Label
 var pass_btn: FancyButton
 var overlay: ColorRect
 var end_panel: Panel
+var opt_panel: Panel
+var _sound_btns := {}
 var confetti: CPUParticles2D
 
 var _awaiting := false
@@ -238,6 +242,8 @@ func _ready() -> void:
 	fx_layer.z_index = 25
 	add_child(fx_layer)
 	_build_hud()
+	if sfx != null:
+		sfx.music(true)
 	if net != null:
 		_net_loop()
 	else:
@@ -245,6 +251,8 @@ func _ready() -> void:
 
 
 func _exit_tree() -> void:
+	if sfx != null:
+		sfx.music(false)
 	if _ai_task >= 0:
 		WorkerThreadPool.wait_for_task_completion(_ai_task)
 		_ai_task = -1
@@ -324,12 +332,17 @@ func _cpu_turn(p: int) -> int:
 	var seed_value := rng.randi()
 	var diff := difficulty
 	var t0 := Time.get_ticks_msec()
-	# La IA piensa en otro hilo para no congelar las animaciones.
-	_ai_task = WorkerThreadPool.add_task(func() -> void: box[0] = AI.choose(st, p, diff, seed_value))
-	while not WorkerThreadPool.is_task_completed(_ai_task):
+	if OS.has_feature("web"):
+		# En el navegador no hay hilos: la IA piensa aquí mismo (main.gd le da menos tiempo).
 		await get_tree().process_frame
-	WorkerThreadPool.wait_for_task_completion(_ai_task)
-	_ai_task = -1
+		box[0] = AI.choose(st, p, diff, seed_value)
+	else:
+		# La IA piensa en otro hilo para no congelar las animaciones.
+		_ai_task = WorkerThreadPool.add_task(func() -> void: box[0] = AI.choose(st, p, diff, seed_value))
+		while not WorkerThreadPool.is_task_completed(_ai_task):
+			await get_tree().process_frame
+		WorkerThreadPool.wait_for_task_completion(_ai_task)
+		_ai_task = -1
 	var spent := (Time.get_ticks_msec() - t0) / 1000.0
 	var think := rng.randf_range(0.55, 1.0)
 	if spent < think:
@@ -338,6 +351,33 @@ func _cpu_turn(p: int) -> int:
 
 
 func _do_move(p: int, mv: int) -> void:
+	var t := _commit_move(p, mv)
+	_refit_board(t)
+
+	if _last != null:
+		_last.tween_marks(0.0, 0.0)
+	_last = t
+	t.z_index = 20
+	if p != 0 or autoplay:
+		t.flip_to(1.0, 0.28)
+	var target := _b2s(t.board_pos)
+	var tw := t.play_to(target, t.board_rot, board_s)
+	_layout_hand(p, 0.3)
+	hands_gfx[p].set_count(hand_tiles[p].size())
+	_refresh_plates()
+	await tw.finished
+	t.z_index = 1
+	t.tween_marks(0.6, 0.0)
+	_play("clack", rng.randf_range(0.92, 1.1))
+	_impact(target)
+	if p != 0 and rng.randf() < 0.12:
+		_drink(p)
+	await _wait(0.18)
+
+
+## Registra una jugada sin animarla: saca la ficha de la mano, calcula dónde
+## cae en la cadena y actualiza el estado. Devuelve la ficha.
+func _commit_move(p: int, mv: int) -> Tile:
 	var code := mv >> 1
 	var side := mv & 1
 	var a := code >> 3
@@ -371,27 +411,7 @@ func _do_move(p: int, mv: int) -> void:
 		arm.vn = pl.vn
 	board_tiles.append(t)
 	state.apply_move(mv)
-	_refit_board(t)
-
-	if _last != null:
-		_last.tween_marks(0.0, 0.0)
-	_last = t
-	t.z_index = 20
-	if p != 0 or autoplay:
-		t.flip_to(1.0, 0.28)
-	var target := _b2s(t.board_pos)
-	var tw := t.play_to(target, t.board_rot, board_s)
-	_layout_hand(p, 0.3)
-	hands_gfx[p].set_count(hand_tiles[p].size())
-	_refresh_plates()
-	await tw.finished
-	t.z_index = 1
-	t.tween_marks(0.6, 0.0)
-	_play("clack", rng.randf_range(0.92, 1.1))
-	_impact(target)
-	if p != 0 and rng.randf() < 0.12:
-		_drink(p)
-	await _wait(0.18)
+	return t
 
 
 func _do_pass(p: int) -> void:
@@ -524,8 +544,15 @@ func _net_seats(ev: Dictionary) -> void:
 	for v in 4:
 		var seat: Dictionary = ev.seats[(v + my_seat) % 4]
 		var human: bool = seat.human
-		names[v] = NAMES[v] if v == 0 or not human else str(seat.name)
-		seat_looks[v] = seat.look if human and v != 0 else {}
+		# "away": su dueño se salió y puede volver; mientras, juega una CPU.
+		var away: bool = seat.get("away", false)
+		if v == 0:
+			names[v] = NAMES[0]
+		elif human:
+			names[v] = str(seat.name)
+		else:
+			names[v] = "%s (CPU)" % seat.name if away else NAMES[v]
+		seat_looks[v] = seat.look if (human or away) and v != 0 else {}
 
 
 ## Procesa en orden lo que va mandando el servidor; cada evento espera a que
@@ -547,10 +574,17 @@ func _net_loop() -> void:
 				await _announce_pass(_vis(ev.seat))
 			"hand_end":
 				await _net_hand_end(ev)
+			"resume":
+				await _net_resume(ev)
 			"left":
 				var v := _vis(ev.seat)
 				_bubble(v, "%s se fue: sigue la CPU" % ev.name)
-				names[v] = NAMES[v]
+				names[v] = "%s (CPU)" % ev.name
+				_refresh_plates()
+			"back":
+				var v := _vis(ev.seat)
+				_bubble(v, "%s volvió" % ev.name)
+				names[v] = str(ev.name)
 				_refresh_plates()
 
 
@@ -578,6 +612,72 @@ func _net_hand_start(ev: Dictionary) -> void:
 	state.turn = starter
 	_refresh_score(false)
 	await _announce_start(ev.opening)
+
+
+## Vuelvo a una partida en marcha: el servidor manda mis fichas y todo lo
+## jugado en esta mano, y la mesa se reconstruye de golpe, sin repartir.
+func _net_resume(ev: Dictionary) -> void:
+	_net_seats(ev)
+	hand_no = ev.hand_no
+	difficulty = ev.difficulty
+	scores = _team_scores(ev.scores)
+	_net_scores = scores.duplicate()
+	_reset_round()
+	state = State.new()
+	_refresh_score(false)
+	var history: Array = ev.history
+	if int(ev.turn) < 0:
+		# Entre partidas: no hay mano en curso que mostrar.
+		_show_banner("Esperando la siguiente mano…", CREAM)
+		return
+	# Las manos se rehacen como estaban al repartir (las mías: las que me quedan
+	# más las que ya jugué) y luego se repiten las jugadas una a una.
+	var mine: Array = Array(ev.hand)
+	for entry: Array in history:
+		if _vis(entry[0]) == 0:
+			mine.append(int(entry[1]) >> 1)
+	mine.sort()
+	for v in 4:
+		var hand: Array = mine
+		if v != 0:
+			hand = []
+			for i in State.HAND_SIZE:
+				hand.append(-(v * 10 + i + 1))
+		state.hands[v] = hand
+	starter = _vis(ev.starter)
+	_spawn_tiles()
+	for entry: Array in history:
+		var v := _vis(entry[0])
+		var mv: int = entry[1]
+		if v != 0:
+			_reveal(hand_tiles[v][0], v, mv >> 1)
+		state.turn = v
+		var t := _commit_move(v, mv)
+		t.flip = 1.0
+		t.z_index = 1
+		_last = t
+	state.turn = _vis(ev.turn)
+	_refit_board(null)
+	for t: Tile in board_tiles:
+		t.fly_to(_b2s(t.board_pos), t.board_rot, board_s, 0.45)
+	if _last != null:
+		_last.tween_marks(0.6, 0.0)
+	for v in 4:
+		for t: Tile in hand_tiles[v]:
+			t.z_index = 3
+			if v == 0 and not autoplay:
+				t.flip = 1.0
+		_layout_hand(v, 0.45)
+		hands_gfx[v].set_count(hand_tiles[v].size())
+	_refresh_plates()
+	_show_banner("Volviste a la partida", GOLD)
+	if autoplay:
+		print("[%s] reanudado: %d fichas en la mesa, me quedan %d" % [names[0], board_tiles.size(), hand_tiles[0].size()])
+	await _wait(0.8)
+	if ev.over:
+		_show_banner("Esperando la siguiente mano…", CREAM)
+	else:
+		_set_active(_vis(ev.turn))
 
 
 func _team_scores(server_scores: Array) -> Array:
@@ -650,8 +750,8 @@ func _reset_round() -> void:
 			g.refill()
 
 
-## "Sopa": las fichas boca abajo se revuelven en el centro y luego se reparten.
-func _animate_deal() -> void:
+## Crea las fichas de todas las manos, boca abajo y amontonadas en el centro.
+func _spawn_tiles() -> void:
 	var c := play_rect.get_center()
 	for p in 4:
 		for code in state.hands[p]:
@@ -670,6 +770,12 @@ func _animate_deal() -> void:
 			hand_tiles[p].append(t)
 		hands_gfx[p].set_count(State.HAND_SIZE)
 	_refresh_plates()
+
+
+## "Sopa": las fichas boca abajo se revuelven en el centro y luego se reparten.
+func _animate_deal() -> void:
+	var c := play_rect.get_center()
+	_spawn_tiles()
 	for r in 3:
 		_play("shuffle")
 		for t: Tile in tiles.values():
@@ -890,7 +996,7 @@ func _build_hud() -> void:
 		plate_labels.append(_label(plate, names[p], 16, CREAM, Rect2(Vector2.ZERO, plate.size)))
 
 	var menu_btn := _button(hud, "Menú", Color(0.45, 0.33, 0.22), Rect2(58, 172.0 - pad, 104, 52), 20)
-	menu_btn.pressed.connect(func() -> void: exit_to_menu.emit())
+	menu_btn.pressed.connect(_show_options)
 
 	pass_btn = _button(hud, "Pasar", Color(0.8, 0.45, 0.1), Rect2(396, 994.0 + pad, 150, 62), 28)
 	pass_btn.visible = false
@@ -937,6 +1043,7 @@ func _build_hud() -> void:
 	end_panel = _panel(hud, Rect2(50, 400, 620, 420), Color(0.13, 0.08, 0.05, 0.97), GOLD)
 	end_panel.mouse_filter = Control.MOUSE_FILTER_STOP
 	end_panel.pivot_offset = end_panel.size * 0.5
+	_build_options()
 	end_panel.visible = false
 
 
@@ -1073,6 +1180,58 @@ func _show_end(title: String, color: Color, lines: Array, buttons: Array) -> voi
 func _hide_end() -> void:
 	overlay.visible = false
 	end_panel.visible = false
+
+
+## Panel del botón "Menú": interruptores de sonido, seguir jugando o salir.
+## La partida no se detiene mientras está abierto (en red no se puede).
+func _build_options() -> void:
+	opt_panel = _panel(hud, Rect2(60, 330, 600, 620), Color(0.13, 0.08, 0.05, 0.97), GOLD)
+	opt_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+	opt_panel.pivot_offset = opt_panel.size * 0.5
+	opt_panel.visible = false
+	_label(opt_panel, "Ajustes", 40, GOLD, Rect2(0, 18, 600, 56))
+	var y := 96.0
+	for key: String in SOUND_OPTIONS.keys():
+		var b := _button(opt_panel, "", Color.GRAY, Rect2(50, y, 500, 76), 26)
+		b.pressed.connect(_toggle_sound.bind(key))
+		_sound_btns[key] = b
+		y += 92.0
+	var resume := _button(opt_panel, "Seguir jugando", Color(0.25, 0.6, 0.3), Rect2(50, 396, 500, 84), 30)
+	resume.pressed.connect(_hide_options)
+	var leave := _button(opt_panel, "Salir al menú", Color(0.7, 0.2, 0.18), Rect2(125, 506, 350, 70), 26)
+	leave.pressed.connect(func() -> void: exit_to_menu.emit())
+	_refresh_options()
+
+
+func _refresh_options() -> void:
+	for key: String in _sound_btns.keys():
+		var on: bool = Settings.audio[key] != 0
+		var b: FancyButton = _sound_btns[key]
+		b.text = "%s:  %s" % [SOUND_OPTIONS[key], "Sí" if on else "No"]
+		b.set_color(Color(0.2, 0.5, 0.6) if on else Color(0.4, 0.32, 0.26))
+
+
+func _toggle_sound(key: String) -> void:
+	Settings.audio[key] = 0 if Settings.audio[key] != 0 else 1
+	Settings.save()
+	_refresh_options()
+	if sfx != null:
+		sfx.refresh_audio()
+
+
+func _show_options() -> void:
+	_refresh_options()
+	overlay.visible = true
+	overlay.modulate.a = 1.0
+	opt_panel.visible = true
+	opt_panel.scale = Vector2(0.7, 0.7)
+	create_tween().tween_property(opt_panel, "scale", Vector2.ONE, 0.3).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+
+
+func _hide_options() -> void:
+	opt_panel.visible = false
+	# Si entre tanto terminó la mano, su panel sigue necesitando el fondo oscuro.
+	overlay.visible = end_panel.visible
 
 
 func _play(id: String, pitch: float = 1.0) -> void:
