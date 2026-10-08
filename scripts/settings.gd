@@ -16,7 +16,12 @@ const DRINK_NAMES := ["Refresco", "Cerveza", "Limonada", "Café", "Agua"]
 
 static var data := {"skin": 1, "hand_style": 0, "accent": 0, "tile_style": 0, "table_style": 0, "drink": 0}
 ## Datos para jugar con amigos: nombre y, a distancia, dirección del servidor.
-static var profile := {"name": "", "server": ""}
+## "player_id" es una clave privada de esta instalación (ver player_token) y
+## "last_code", la última sala en línea, para volver a ella con un toque.
+static var profile := {"name": "", "server": "", "player_id": "", "last_code": ""}
+## Sonido: 1 = activado, 0 = silenciado. "pass_voice" son los audios grabados
+## que suenan al pasar; "sfx", el resto de efectos; "music", la música de fondo.
+static var audio := {"pass_voice": 1, "sfx": 1, "music": 1}
 
 
 static func load_settings() -> void:
@@ -27,6 +32,8 @@ static func load_settings() -> void:
 		data[key] = int(cfg.get_value("look", key, data[key]))
 	for key in profile.keys():
 		profile[key] = str(cfg.get_value("net", key, profile[key]))
+	for key in audio.keys():
+		audio[key] = int(cfg.get_value("audio", key, audio[key]))
 
 
 static func save() -> void:
@@ -35,7 +42,20 @@ static func save() -> void:
 		cfg.set_value("look", key, data[key])
 	for key in profile.keys():
 		cfg.set_value("net", key, profile[key])
+	for key in audio.keys():
+		cfg.set_value("audio", key, audio[key])
 	cfg.save(PATH)
+
+
+## Clave privada de esta instalación, creada al azar la primera vez. El servidor
+## la guarda junto al asiento: si me salgo de una partida en marcha, solo quien
+## presente esta misma clave puede recuperar ese asiento. Nunca se muestra ni se
+## manda a otros jugadores.
+static func player_token() -> String:
+	if profile.player_id == "":
+		profile.player_id = Crypto.new().generate_random_bytes(16).hex_encode()
+		save()
+	return profile.player_id
 
 
 ## Aspecto de mis manos y mi bebida, para que los demás jugadores me vean igual.

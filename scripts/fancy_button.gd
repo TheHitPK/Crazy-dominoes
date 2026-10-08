@@ -14,19 +14,24 @@ func setup(txt: String, color: Color, font_size: int = 24) -> void:
 		add_theme_color_override(c, Color.WHITE)
 	add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.6))
 	add_theme_constant_override("outline_size", 5)
-	add_theme_stylebox_override("normal", _style(color, 6))
-	add_theme_stylebox_override("hover", _style(color.lightened(0.2), 6))
-	add_theme_stylebox_override("pressed", _style(color.darkened(0.15), 2))
-	add_theme_stylebox_override("hover_pressed", _style(color.darkened(0.15), 2))
-	add_theme_stylebox_override("disabled", _style(color.darkened(0.25), 6))
 	add_theme_color_override("font_disabled_color", Color(1, 1, 1, 0.8))
 	add_theme_stylebox_override("focus", StyleBoxEmpty.new())
+	set_color(color)
 	resized.connect(func() -> void: pivot_offset = size * 0.5)
 	mouse_entered.connect(_scale_to.bind(1.08, 0.22))
 	mouse_exited.connect(_scale_to.bind(1.0, 0.22))
 	button_down.connect(_scale_to.bind(0.93, 0.08))
 	# En pantalla táctil no hay "mouse_exited" al levantar el dedo: vuelve a su tamaño.
 	button_up.connect(_scale_to.bind(1.0, 0.18))
+
+
+## Cambia el color del botón (por ejemplo, un interruptor encendido/apagado).
+func set_color(color: Color) -> void:
+	add_theme_stylebox_override("normal", _style(color, 6))
+	add_theme_stylebox_override("hover", _style(color.lightened(0.2), 6))
+	add_theme_stylebox_override("pressed", _style(color.darkened(0.15), 2))
+	add_theme_stylebox_override("hover_pressed", _style(color.darkened(0.15), 2))
+	add_theme_stylebox_override("disabled", _style(color.darkened(0.25), 6))
 
 
 ## Latido continuo para llamar la atención.

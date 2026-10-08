@@ -155,8 +155,9 @@ func _draw_front() -> void:
 		var al: float = h[2]
 		if al < 0.02:
 			continue
-		# El pulgar sale del borde exterior de cada mano y se cierra sobre las fichas.
-		var base := Vector2(hx + s * 0.8 * u, 1.55 * u)
-		var tip := Vector2(hx + s * 0.3 * u, 0.48 * u)
-		_finger(_front, base, tip, 0.44 * u, al)
+		# El pulgar sale del borde exterior de cada mano, abierto: solo pisa el
+		# canto inferior de la ficha, por debajo de los puntos, para no taparlos.
+		var base := Vector2(hx + s * 1.0 * u, 1.62 * u)
+		var tip := Vector2(hx + s * 0.46 * u, 1.08 * u)
+		_finger(_front, base, tip, 0.38 * u, al)
 		_nail(_front, tip, (tip - base).normalized(), 0.3 * u, al, true)

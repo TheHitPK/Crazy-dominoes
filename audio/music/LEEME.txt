@@ -1,0 +1,20 @@
+Música de fondo de las partidas
+===============================
+
+Todo lo que haya en esta carpeta suena de fondo durante las partidas, una pista
+tras otra en orden aleatorio. Con una sola pista, se repite.
+
+Para poner tu música (jazz, gaita, lo que quieras), copia aquí los archivos:
+.mp3, .wav o .ogg en formato Vorbis. Si no quieres la pista que viene, bórrala.
+
+"jazz_de_la_casa.ogg" es una pista corta generada por código para que haya
+música desde el primer día. Es libre: no tiene derechos de nadie.
+
+OJO con los derechos: si vas a publicar el juego, la música tiene que ser tuya
+o tener licencia que permita usarla en una app. Las canciones comerciales
+(incluidas las gaitas conocidas) no se pueden meter sin permiso.
+
+La música se apaga desde la partida: botón "Menú" -> "Música: No".
+
+Después de copiar archivos nuevos, abre el proyecto en Godot una vez para que
+los importe antes de exportar el APK.

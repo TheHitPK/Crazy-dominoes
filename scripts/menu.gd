@@ -93,8 +93,8 @@ func _ready() -> void:
 	look_btn.pressed.connect(open_customize)
 	var quit_btn := _button("Salir", Color(0.45, 0.33, 0.22), Rect2(215, 1120, 290, 64), 26, 0.8)
 	quit_btn.pressed.connect(func() -> void: get_tree().quit())
-	# iOS no permite que una app se cierre sola.
-	quit_btn.visible = OS.get_name() != "iOS"
+	# iOS no permite que una app se cierre sola, y en el navegador no tiene sentido.
+	quit_btn.visible = OS.get_name() != "iOS" and not OS.has_feature("web")
 
 	_build_rules()
 	_customize = Customize.new()
