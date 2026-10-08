@@ -65,6 +65,7 @@ var _net_scores: Array = [0, 0]
 ## Disposición en pantalla; depende del ancho extra del teléfono (ver _layout).
 ## Zona de la mesa donde se arma la cadena de fichas.
 var play_rect: Rect2
+var _board_vertical := true
 ## Mitad del ancho de una fila de la cadena, en unidades de tablero.
 var row_limit: float
 var seat_pos: Array
@@ -161,21 +162,32 @@ class Ring extends Node2D:
 ## que el diseño base de 720x1280. Los rivales quedan centrados a los lados.
 func _layout() -> void:
 	var p: float = Table.pad
-	play_rect = Rect2(125, 270.0 - p, 470, 675.0 + p * 2.0)
-	# La cadena corre en vertical, así que el límite de fila sale del alto.
-	row_limit = play_rect.size.y * 0.5 / BOARD_SCALE - S - 6.0
+	# `s` solo es distinto de 0 en la web de escritorio (mesa cuadrada): los
+	# rivales y lo que va en las esquinas se separan hacia los lados.
+	var s: float = Table.side
+	play_rect = Rect2(125.0 - s, 270.0 - p, 470.0 + s * 2.0, 675.0 + p * 2.0)
+	# La cadena corre a lo largo del lado mayor de la zona de juego: en vertical
+	# en el teléfono, en horizontal en la mesa cuadrada.
+	_board_vertical = play_rect.size.y > play_rect.size.x
+	var run := play_rect.size.y if _board_vertical else play_rect.size.x
+	row_limit = run * 0.5 / BOARD_SCALE - S - 6.0
 	var mid := play_rect.get_center().y
-	seat_pos = [Vector2(360, 1176.0 + p), Vector2(636, mid), Vector2(360, 92.0 - p), Vector2(84, mid)]
-	plate_rect = [Rect2(396, 958.0 + p, 150, 30), Rect2(586, mid - 172.0, 124, 52),
-			Rect2(285, 126.0 - p, 150, 30), Rect2(10, mid - 172.0, 124, 52)]
-	bubble_pos = [Vector2(360, 900.0 + p), Vector2(500, mid), Vector2(360, 310.0 - p), Vector2(220, mid)]
-	slate_pos = [Vector2(170, 958.0 + p), Vector2(444, 164.0 - p)]
+	seat_pos = [Vector2(360, 1176.0 + p), Vector2(636.0 + s, mid), Vector2(360, 92.0 - p), Vector2(84.0 - s, mid)]
+	plate_rect = [Rect2(396, 958.0 + p, 150, 30), Rect2(586.0 + s, mid - 172.0, 124, 52),
+			Rect2(285, 126.0 - p, 150, 30), Rect2(10.0 - s, mid - 172.0, 124, 52)]
+	bubble_pos = [Vector2(360, 900.0 + p), Vector2(500.0 + s, mid), Vector2(360, 310.0 - p), Vector2(220.0 - s, mid)]
+	slate_pos = [Vector2(170, 958.0 + p), Vector2(444.0 + s, 164.0 - p)]
 
 
-## Gira un punto del tablero 90°: la cadena se calcula en horizontal y se
-## muestra en vertical, que es como cabe en un teléfono de pie.
-static func _turn(v: Vector2) -> Vector2:
-	return Vector2(-v.y, v.x)
+## La cadena se calcula siempre en horizontal. En un teléfono de pie se muestra
+## girada 90° (en vertical), que es como cabe; en la mesa cuadrada, tal cual.
+func _turn(v: Vector2) -> Vector2:
+	return Vector2(-v.y, v.x) if _board_vertical else v
+
+
+## Giro que se suma a cada ficha de la mesa para acompañar a _turn.
+func _turn_rot() -> float:
+	return PI * 0.5 if _board_vertical else 0.0
 
 
 func _ready() -> void:
@@ -388,7 +400,7 @@ func _commit_move(p: int, mv: int) -> Tile:
 	if state.left < 0:
 		# Primera ficha: al centro. El doble va atravesado a la cadena.
 		t.board_pos = Vector2.ZERO
-		t.board_rot = PI * 0.5 if dbl else 0.0
+		t.board_rot = (0.0 if dbl else -PI * 0.5) + _turn_rot()
 		var half := S * 0.5 if dbl else S
 		arms = [
 			{"p": Vector2(-half, 0), "d": Vector2.LEFT, "vs": -1.0, "next_h": Vector2.RIGHT, "vn": 0},
@@ -402,9 +414,9 @@ func _commit_move(p: int, mv: int) -> Tile:
 			t.set_values(endv, b if a == endv else a)
 			t.rotation += PI
 		var pl := _calc_place(arm, dbl)
-		# En pantalla la cadena va girada 90° (ver _turn).
+		# En el teléfono la cadena va girada 90° (ver _turn).
 		t.board_pos = _turn(pl.center)
-		t.board_rot = pl.rot + PI * 0.5
+		t.board_rot = pl.rot + _turn_rot()
 		arm.p = pl.p
 		arm.d = pl.d
 		arm.next_h = pl.next_h
@@ -881,7 +893,7 @@ func _show_ghosts(code: int) -> void:
 	for g: Ghost in ghosts:
 		var pl := _calc_place(arms[g.side], dbl)
 		g.position = _b2s(_turn(pl.center))
-		g.rotation = pl.rot + PI * 0.5
+		g.rotation = pl.rot + _turn_rot()
 		g.scale = Vector2(board_s, board_s)
 		g.visible = true
 
@@ -977,7 +989,7 @@ func _build_hud() -> void:
 	hud.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	layer.add_child(hud)
 
-	var sp := _panel(hud, Rect2(172, 177.0 - pad, 262, 42), Color(0.08, 0.05, 0.03, 0.85), Color(0.85, 0.65, 0.3, 0.9))
+	var sp := _panel(hud, Rect2(172.0 - Table.side, 177.0 - pad, 262, 42), Color(0.08, 0.05, 0.03, 0.85), Color(0.85, 0.65, 0.3, 0.9))
 	info_lbl = _label(sp, "", 16, Color(0.9, 0.83, 0.67), Rect2(0, 0, 262, 42))
 
 	for team in 2:
@@ -995,7 +1007,7 @@ func _build_hud() -> void:
 		plates.append(plate)
 		plate_labels.append(_label(plate, names[p], 16, CREAM, Rect2(Vector2.ZERO, plate.size)))
 
-	var menu_btn := _button(hud, "Menú", Color(0.45, 0.33, 0.22), Rect2(58, 172.0 - pad, 104, 52), 20)
+	var menu_btn := _button(hud, "Menú", Color(0.45, 0.33, 0.22), Rect2(58.0 - Table.side, 172.0 - pad, 104, 52), 20)
 	menu_btn.pressed.connect(_show_options)
 
 	pass_btn = _button(hud, "Pasar", Color(0.8, 0.45, 0.1), Rect2(396, 994.0 + pad, 150, 62), 28)
@@ -1101,8 +1113,11 @@ func _refresh_score(animate: bool) -> void:
 func _refresh_plates() -> void:
 	for p in 4:
 		# Las placas de los rivales son estrechas: nombre arriba, fichas debajo.
-		var fmt := "%s\n%d fichas" if p % 2 == 1 else "%s  ·  %d"
-		plate_labels[p].text = fmt % [names[p], hand_tiles[p].size()]
+		var count: int = hand_tiles[p].size()
+		var fmt := "%s  ·  %d"
+		if p % 2 == 1:
+			fmt = "%s\n%d ficha" if count == 1 else "%s\n%d fichas"
+		plate_labels[p].text = fmt % [names[p], count]
 
 
 func _set_active(p: int) -> void:

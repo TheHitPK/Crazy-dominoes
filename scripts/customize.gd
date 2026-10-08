@@ -155,15 +155,17 @@ func _build_preview() -> void:
 	var origin := Vector2(30, 66)
 	# La mesa entera en miniatura. En un teléfono es más alta (Table.pad), así
 	# que se encoge para que quepa entera en el alto de la vista previa.
-	var mini := 250.0 / (Table.SCREEN.y + Table.pad * 2.0)
+	# La cuadrada de la web de escritorio (Table.side) además se limita por el ancho.
+	var full := Table.SCREEN + Vector2(Table.side, Table.pad) * 2.0
+	var mini := minf(250.0 / full.y, 150.0 / full.x)
 	var clip := Control.new()
-	clip.position = origin
-	clip.size = Vector2(Table.SCREEN.x * mini, 250)
+	clip.position = origin + Vector2(0, (250.0 - full.y * mini) * 0.5)
+	clip.size = full * mini
 	clip.clip_contents = true
 	_panel.add_child(clip)
 	_mini_table = Table.new()
 	_mini_table.scale = Vector2(mini, mini)
-	_mini_table.position = Vector2(0, Table.pad * mini)
+	_mini_table.position = Vector2(Table.side, Table.pad) * mini
 	clip.add_child(_mini_table)
 
 	# Un trozo de mesa con tu mano, tus fichas y tu vaso.

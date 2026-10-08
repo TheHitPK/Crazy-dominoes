@@ -12,6 +12,7 @@ extends Node
 ##   --customize     abre el menú con el panel de personalización
 ##   --options       con --play o --auto, abre el panel de ajustes de la partida
 ##   --online        abre directamente la pantalla "Jugar con amigos"
+##   --square        fuerza la mesa cuadrada de la web de escritorio
 ##   --look=k:v,...  fuerza ajustes de aspecto, p. ej. --look=tile_style:1,hand_style:2
 ##   --speed=X       multiplica la velocidad del juego
 ##   --shot=RUTA     guarda una captura PNG y cierra
@@ -35,6 +36,8 @@ const Settings = preload("res://scripts/settings.gd")
 const Table = preload("res://scripts/table.gd")
 
 const BASE_SIZE := Vector2(720, 1280)
+## Cuánto crece la mesa por cada lado en la web de escritorio: 720 + 2·280 = 1280, cuadrada.
+const SQUARE_SIDE := 280.0
 
 var sfx: Node
 var net: Net
@@ -76,6 +79,10 @@ func _ready() -> void:
 	layer.add_child(fade)
 
 	RenderingServer.set_default_clear_color(Table.FLOOR)
+	if args.has("--square") or _is_desktop_web():
+		# Mesa cuadrada: se ensancha el lienzo base y la mesa crece hacia los lados.
+		Table.side = SQUARE_SIDE
+		get_tree().root.content_scale_size = Vector2i(BASE_SIZE + Vector2(SQUARE_SIDE * 2.0, 0))
 	_fit_screen()
 	get_viewport().size_changed.connect(_center_content)
 	net.closed.connect(_on_net_closed)
@@ -120,6 +127,16 @@ func _fit_screen() -> void:
 			var units_per_px := get_viewport().get_visible_rect().size.y / float(screen.y)
 			inset = maxf(safe.position.y, screen.y - safe.end.y) * units_per_px
 	Table.pad = maxf(extra - inset, 0.0)
+
+
+## La versión web abierta en un ordenador: navegador que no es de móvil y con
+## ventana apaisada. Ahí la mesa se muestra cuadrada; en el teléfono (web o
+## app) sigue en vertical.
+func _is_desktop_web() -> bool:
+	if not OS.has_feature("web") or OS.has_feature("web_android") or OS.has_feature("web_ios"):
+		return false
+	var window := DisplayServer.window_get_size()
+	return window.x >= window.y
 
 
 func _center_content() -> float:
