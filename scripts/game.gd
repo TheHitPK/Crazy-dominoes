@@ -22,6 +22,12 @@ const TARGET_SCORE := 100
 const BOARD_SCALE := 1.25
 ## Radio (en unidades de pantalla) dentro del cual un toque cuenta como acierto.
 const TOUCH_RADIUS := 80.0
+## Segundos que se muestra que no tengo jugada antes de pasar solo.
+const PASS_PAUSE := 0.9
+## Cuánto hay que mover el dedo sobre una ficha para que cuente como arrastre y no como toque.
+const DRAG_START := 18.0
+## La ficha arrastrada va por encima del dedo, para que se vea.
+const DRAG_LIFT := Vector2(0, -70)
 ## Lado corto de una ficha en unidades de tablero.
 const S := 40.0
 
@@ -99,17 +105,23 @@ var glasses: Array = []
 var boards: Array = []
 var info_lbl: Label
 var banner: Label
-var pass_btn: FancyButton
 var overlay: ColorRect
 var end_panel: Panel
 var opt_panel: Panel
 var _sound_btns := {}
+var _hands_btn: FancyButton
 var confetti: CPUParticles2D
 
 var _awaiting := false
 var _choices: Array = []
 var _pending := -1
 var _hover: Tile
+## Ficha sobre la que se apoyó el dedo, y dónde; decide entre toque y arrastre.
+var _press_tile: Tile
+var _press_pos := Vector2.ZERO
+## Ficha que se está arrastrando y extremos en los que puede caer.
+var _drag: Tile
+var _drag_sides: Array = []
 var _last: Tile
 var _ai_task := -1
 var _banner_tw: Tween
@@ -165,18 +177,20 @@ func _layout() -> void:
 	# `s` solo es distinto de 0 en la web de escritorio (mesa cuadrada): los
 	# rivales y lo que va en las esquinas se separan hacia los lados.
 	var s: float = Table.side
-	play_rect = Rect2(125.0 - s, 270.0 - p, 470.0 + s * 2.0, 675.0 + p * 2.0)
+	play_rect = Rect2(125.0 - s, 270.0 - p, 470.0 + s * 2.0, 639.0 + p * 2.0)
 	# La cadena corre a lo largo del lado mayor de la zona de juego: en vertical
 	# en el teléfono, en horizontal en la mesa cuadrada.
 	_board_vertical = play_rect.size.y > play_rect.size.x
 	var run := play_rect.size.y if _board_vertical else play_rect.size.x
 	row_limit = run * 0.5 / BOARD_SCALE - S - 6.0
 	var mid := play_rect.get_center().y
-	seat_pos = [Vector2(360, 1176.0 + p), Vector2(636.0 + s, mid), Vector2(360, 92.0 - p), Vector2(84.0 - s, mid)]
-	plate_rect = [Rect2(396, 958.0 + p, 150, 30), Rect2(586.0 + s, mid - 172.0, 124, 52),
+	# Tus fichas no van pegadas al borde de abajo: queda sitio para que se vean
+	# la palma y los pulgares que las sujetan.
+	seat_pos = [Vector2(360, 1140.0 + p), Vector2(636.0 + s, mid), Vector2(360, 92.0 - p), Vector2(84.0 - s, mid)]
+	plate_rect = [Rect2(396, 922.0 + p, 150, 30), Rect2(586.0 + s, mid - 172.0, 124, 52),
 			Rect2(285, 126.0 - p, 150, 30), Rect2(10.0 - s, mid - 172.0, 124, 52)]
-	bubble_pos = [Vector2(360, 900.0 + p), Vector2(500.0 + s, mid), Vector2(360, 310.0 - p), Vector2(220.0 - s, mid)]
-	slate_pos = [Vector2(170, 958.0 + p), Vector2(444.0 + s, 164.0 - p)]
+	bubble_pos = [Vector2(360, 864.0 + p), Vector2(500.0 + s, mid), Vector2(360, 310.0 - p), Vector2(220.0 - s, mid)]
+	slate_pos = [Vector2(170, 922.0 + p), Vector2(444.0 + s, 164.0 - p)]
 
 
 ## La cadena se calcula siempre en horizontal. En un teléfono de pie se muestra
@@ -254,6 +268,7 @@ func _ready() -> void:
 	fx_layer.z_index = 25
 	add_child(fx_layer)
 	_build_hud()
+	_apply_show_hands()
 	if sfx != null:
 		sfx.music(true)
 	if net != null:
@@ -322,6 +337,8 @@ func _human_turn(moves: Array) -> int:
 	_choices = moves
 	_pending = -1
 	_hover = null
+	_press_tile = null
+	_drag = null
 	_awaiting = true
 	for t: Tile in hand_tiles[0]:
 		var ok := _playable(t.code)
@@ -428,21 +445,20 @@ func _commit_move(p: int, mv: int) -> Tile:
 
 func _do_pass(p: int) -> void:
 	if p == 0 and not autoplay:
-		await _press_pass()
+		await _auto_pass()
 	else:
 		await _wait(0.45)
 	await _announce_pass(p)
 
 
-## Muestra el botón "Pasar" y espera a que el jugador lo pulse.
-func _press_pass() -> void:
-	pass_btn.visible = true
-	pass_btn.scale = Vector2(0.3, 0.3)
-	create_tween().tween_property(pass_btn, "scale", Vector2.ONE, 0.3).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	pass_btn.pulse(true)
-	await pass_btn.pressed
-	pass_btn.pulse(false)
-	pass_btn.visible = false
+## No tengo ficha que case: el pase es automático. Mis fichas se atenúan un
+## momento para que se vea que no hay jugada y el turno sigue solo.
+func _auto_pass() -> void:
+	for t: Tile in hand_tiles[0]:
+		t.tween_marks(0.0, 1.0)
+	await _wait(PASS_PAUSE)
+	for t: Tile in hand_tiles[0]:
+		t.tween_marks(0.0, 0.0)
 
 
 func _announce_pass(p: int) -> void:
@@ -704,7 +720,7 @@ func _net_turn(v: int) -> void:
 	var moves: Array = state.legal_moves(0)
 	if moves.is_empty():
 		if not autoplay:
-			await _press_pass()
+			await _auto_pass()
 		net.send("sv_move", [-1])
 	elif autoplay:
 		net.send("sv_move", [AI.choose(state, 0, AI.EASY, rng.randi())])
@@ -755,7 +771,6 @@ func _reset_round() -> void:
 	board_off = play_rect.get_center()
 	_last = null
 	_hide_ghosts()
-	pass_btn.visible = false
 	confetti.emitting = false
 	for g: Glass in glasses:
 		if g.level < 0.3:
@@ -825,6 +840,9 @@ func _layout_hand(p: int, dur: float) -> void:
 				scl *= 1.06
 			elif _playable(t.code):
 				pos.y -= 14.0
+		if t == _drag:
+			# La que llevo en el dedo no vuelve a su hueco.
+			continue
 		t.fly_to(pos, sl[1], scl, dur)
 
 
@@ -888,14 +906,22 @@ func _refit_board(skip: Tile) -> void:
 			t.fly_to(_b2s(t.board_pos), t.board_rot, s, 0.45)
 
 
-func _show_ghosts(code: int) -> void:
+## Marca en la mesa dónde caería la ficha en cada extremo de `sides`.
+func _show_ghosts(code: int, sides: Array = [0, 1]) -> void:
 	var dbl := (code >> 3) == (code & 7)
 	for g: Ghost in ghosts:
-		var pl := _calc_place(arms[g.side], dbl)
-		g.position = _b2s(_turn(pl.center))
-		g.rotation = pl.rot + _turn_rot()
+		g.visible = sides.has(g.side)
 		g.scale = Vector2(board_s, board_s)
-		g.visible = true
+		if not g.visible:
+			continue
+		if arms.is_empty():
+			# Mesa vacía: la primera ficha va al centro.
+			g.position = _b2s(Vector2.ZERO)
+			g.rotation = (0.0 if dbl else -PI * 0.5) + _turn_rot()
+		else:
+			var pl := _calc_place(arms[g.side], dbl)
+			g.position = _b2s(_turn(pl.center))
+			g.rotation = pl.rot + _turn_rot()
 
 
 func _hide_ghosts() -> void:
@@ -906,9 +932,14 @@ func _hide_ghosts() -> void:
 # ---------------------------------------------------------------------- entrada
 
 func _unhandled_input(event: InputEvent) -> void:
+	# El dedo llega como ratón (Godot convierte los toques). La posición se
+	# saca del propio evento, ya en coordenadas de la mesa.
+	if not event is InputEventMouse:
+		return
+	var pos: Vector2 = (make_input_local(event) as InputEventMouse).position
+	var button := event as InputEventMouseButton
 	# Tu vaso se puede coger en cualquier momento.
-	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT \
-			and glasses[0].hit(get_global_mouse_position()):
+	if button != null and button.pressed and button.button_index == MOUSE_BUTTON_LEFT and glasses[0].hit(pos):
 		if glasses[0].level <= 0.02:
 			glasses[0].refill()
 		else:
@@ -916,15 +947,81 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if not _awaiting:
 		return
-	if event is InputEventMouseMotion:
-		var h := _tile_at(get_global_mouse_position())
-		if h != null and not _playable(h.code):
-			h = null
-		if h != _hover:
-			_hover = h
-			_layout_hand(0, 0.15)
-	elif event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
-		_click(get_global_mouse_position())
+	# Hay dos formas de jugar una ficha: tocarla (se suelta el dedo sin moverlo)
+	# o arrastrarla hasta la mesa.
+	if button != null and button.button_index != MOUSE_BUTTON_LEFT:
+		return
+	if button != null and button.pressed:
+		_press_tile = _tile_at(pos)
+		_press_pos = pos
+		if _press_tile == null:
+			# Toque fuera de mis fichas: elegir un extremo marcado o cancelar.
+			_click(pos)
+	elif button != null:
+		if _drag != null:
+			_end_drag()
+		elif _press_tile != null and _press_tile == _tile_at(pos):
+			_click(pos)
+		_press_tile = null
+	elif event is InputEventMouseMotion:
+		if _drag != null:
+			_drag_to(pos)
+		elif _press_tile != null:
+			if _playable(_press_tile.code) and pos.distance_to(_press_pos) > DRAG_START:
+				_begin_drag(_press_tile)
+				_drag_to(pos)
+		else:
+			var h := _tile_at(pos)
+			if h != null and not _playable(h.code):
+				h = null
+			if h != _hover:
+				_hover = h
+				_layout_hand(0, 0.15)
+
+
+func _begin_drag(t: Tile) -> void:
+	_drag = t
+	_pending = -1
+	_hover = null
+	_drag_sides = []
+	for m in _choices:
+		if (m >> 1) == t.code:
+			_drag_sides.append(m & 1)
+	t.z_index = 20
+	_show_ghosts(t.code, _drag_sides)
+	_layout_hand(0, 0.15)
+	_play("click")
+
+
+func _drag_to(pos: Vector2) -> void:
+	_drag.fly_to(pos + DRAG_LIFT, 0.0, SEAT_SCALE[0] * 0.85, 0.06)
+
+
+## Suelta la ficha arrastrada: se juega si cayó en la mesa, o vuelve a la mano.
+func _end_drag() -> void:
+	var t := _drag
+	var side := _drop_side(t.position)
+	_drag = null
+	_hide_ghosts()
+	if side >= 0:
+		_human_done.emit(t.code * 2 + side)
+	else:
+		t.z_index = 3
+		_layout_hand(0, 0.2)
+
+
+## Extremo en el que cae una ficha soltada en `point`, o -1 si no cayó en la mesa.
+## Con un solo extremo posible vale cualquier punto de la mesa; con dos, el más cercano.
+func _drop_side(point: Vector2) -> int:
+	if _drag_sides.is_empty() or not play_rect.grow(40.0).has_point(point):
+		return -1
+	var best: int = _drag_sides[0]
+	var best_distance := INF
+	for g: Ghost in ghosts:
+		if g.visible and g.distance(point) < best_distance:
+			best_distance = g.distance(point)
+			best = g.side
+	return best
 
 
 func _click(pos: Vector2) -> void:
@@ -1010,8 +1107,6 @@ func _build_hud() -> void:
 	var menu_btn := _button(hud, "Menú", Color(0.45, 0.33, 0.22), Rect2(58.0 - Table.side, 172.0 - pad, 104, 52), 20)
 	menu_btn.pressed.connect(_show_options)
 
-	pass_btn = _button(hud, "Pasar", Color(0.8, 0.45, 0.1), Rect2(396, 994.0 + pad, 150, 62), 28)
-	pass_btn.visible = false
 
 	banner = _label(hud, "", 46, GOLD, Rect2(20, 520, 680, 170))
 	banner.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -1197,10 +1292,10 @@ func _hide_end() -> void:
 	end_panel.visible = false
 
 
-## Panel del botón "Menú": interruptores de sonido, seguir jugando o salir.
+## Panel del botón "Menú": interruptores de sonido y de manos, seguir jugando o salir.
 ## La partida no se detiene mientras está abierto (en red no se puede).
 func _build_options() -> void:
-	opt_panel = _panel(hud, Rect2(60, 330, 600, 620), Color(0.13, 0.08, 0.05, 0.97), GOLD)
+	opt_panel = _panel(hud, Rect2(60, 290, 600, 710), Color(0.13, 0.08, 0.05, 0.97), GOLD)
 	opt_panel.mouse_filter = Control.MOUSE_FILTER_STOP
 	opt_panel.pivot_offset = opt_panel.size * 0.5
 	opt_panel.visible = false
@@ -1211,19 +1306,41 @@ func _build_options() -> void:
 		b.pressed.connect(_toggle_sound.bind(key))
 		_sound_btns[key] = b
 		y += 92.0
-	var resume := _button(opt_panel, "Seguir jugando", Color(0.25, 0.6, 0.3), Rect2(50, 396, 500, 84), 30)
+	_hands_btn = _button(opt_panel, "", Color.GRAY, Rect2(50, y, 500, 76), 26)
+	_hands_btn.pressed.connect(_toggle_hands)
+	var resume := _button(opt_panel, "Seguir jugando", Color(0.25, 0.6, 0.3), Rect2(50, 488, 500, 84), 30)
 	resume.pressed.connect(_hide_options)
-	var leave := _button(opt_panel, "Salir al menú", Color(0.7, 0.2, 0.18), Rect2(125, 506, 350, 70), 26)
+	var leave := _button(opt_panel, "Salir al menú", Color(0.7, 0.2, 0.18), Rect2(125, 598, 350, 70), 26)
 	leave.pressed.connect(func() -> void: exit_to_menu.emit())
 	_refresh_options()
 
 
 func _refresh_options() -> void:
 	for key: String in _sound_btns.keys():
-		var on: bool = Settings.audio[key] != 0
-		var b: FancyButton = _sound_btns[key]
-		b.text = "%s:  %s" % [SOUND_OPTIONS[key], "Sí" if on else "No"]
-		b.set_color(Color(0.2, 0.5, 0.6) if on else Color(0.4, 0.32, 0.26))
+		_paint_switch(_sound_btns[key], SOUND_OPTIONS[key], Settings.audio[key] != 0)
+	_paint_switch(_hands_btn, "Manos visibles", Settings.data.show_hands != 0)
+
+
+func _paint_switch(b: FancyButton, label: String, on: bool) -> void:
+	b.text = "%s:  %s" % [label, "Sí" if on else "No"]
+	b.set_color(Color(0.2, 0.5, 0.6) if on else Color(0.4, 0.32, 0.26))
+
+
+func _toggle_hands() -> void:
+	Settings.data.show_hands = 0 if Settings.data.show_hands != 0 else 1
+	Settings.save()
+	_refresh_options()
+	_apply_show_hands()
+
+
+## Muestra u oculta las manos que sujetan las fichas (las mías y las de los
+## demás) según la preferencia del jugador. Las fichas no se mueven.
+func _apply_show_hands() -> void:
+	var on: bool = Settings.data.show_hands != 0
+	for h: Hand in hands_gfx:
+		h.visible = on
+	for g: Glass in glasses:
+		g.show_grip = on
 
 
 func _toggle_sound(key: String) -> void:

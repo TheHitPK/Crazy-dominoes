@@ -14,7 +14,13 @@ const TILE_NAMES := ["Marfil clásico", "Madera", "Cerámica", "Ébano", "Puntos
 const TABLE_NAMES := ["Roble", "Nogal oscuro", "Pino claro", "Caoba", "Tapete verde", "Tablones rústicos"]
 const DRINK_NAMES := ["Refresco", "Cerveza", "Limonada", "Café", "Agua"]
 
-static var data := {"skin": 1, "hand_style": 0, "accent": 0, "tile_style": 0, "table_style": 0, "drink": 0}
+const SHOW_HANDS_NAMES := ["Ocultas", "Visibles"]
+
+## "show_hands": 1 = se dibujan las manos que sujetan las fichas (las mías y las
+## de los demás); 0 = solo se ven las fichas. Es una preferencia de mi pantalla:
+## no cambia cómo me ven los otros jugadores.
+static var data := {"skin": 1, "hand_style": 0, "accent": 0, "tile_style": 0, "table_style": 0, "drink": 0,
+		"show_hands": 1}
 ## Datos para jugar con amigos: nombre y, a distancia, dirección del servidor.
 ## "player_id" es una clave privada de esta instalación (ver player_token) y
 ## "last_code", la última sala en línea, para volver a ella con un toque.

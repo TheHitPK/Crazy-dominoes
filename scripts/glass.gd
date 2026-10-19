@@ -29,6 +29,8 @@ var tilt := 0.0:
 		queue_redraw()
 ## Color de la mano que lo agarra.
 var grip := Color(0.94, 0.76, 0.6)
+## Si se dibujan los dedos al levantarlo (no, cuando el jugador oculta las manos).
+var show_grip := true
 ## Dirección hacia el jugador dueño del vaso.
 var toward := Vector2.DOWN
 var busy := false
@@ -105,7 +107,7 @@ func _draw() -> void:
 		draw_arc(Vector2.ZERO, R, 0.0, TAU, 48, Color(1, 1, 1, 0.65), 1.5, true)
 		draw_arc(Vector2.ZERO, R - 7.0, PI * 1.1, PI * 1.5, 16, Color(1, 1, 1, 0.5), 2.0, true)
 	# Dedos del jugador rodeando el vaso por su lado.
-	if lift > 0.05:
+	if lift > 0.05 and show_grip:
 		var dark := Color(grip.darkened(0.38), lift)
 		for j in 4:
 			var ang := PI * 0.5 + (j - 1.5) * 0.36
