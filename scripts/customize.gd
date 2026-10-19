@@ -13,7 +13,7 @@ const FancyButton = preload("res://scripts/fancy_button.gd")
 
 const GOLD := Color(1.0, 0.84, 0.3)
 const CREAM := Color(0.97, 0.93, 0.82)
-const ROW_H := 108.0
+const ROW_H := 93.0
 
 var sfx: Node
 var _panel: Panel
@@ -48,14 +48,15 @@ func _ready() -> void:
 
 	# Vista previa arriba; las opciones debajo, una por fila.
 	var y := 336.0
-	_swatch_row(y, "Color de piel", Settings.SKINS, "skin")
-	_cycle_row(y + ROW_H, "Manos", Settings.HAND_NAMES, "hand_style")
-	_swatch_row(y + ROW_H * 2, "Color de uñas / guantes", Settings.ACCENTS, "accent")
-	_cycle_row(y + ROW_H * 3, "Fichas", Settings.TILE_NAMES, "tile_style")
-	_cycle_row(y + ROW_H * 4, "Mesa", Settings.TABLE_NAMES, "table_style")
-	_cycle_row(y + ROW_H * 5, "Tu bebida", Settings.DRINK_NAMES, "drink")
+	_cycle_row(y, "Manos sujetando las fichas", Settings.SHOW_HANDS_NAMES, "show_hands")
+	_swatch_row(y + ROW_H, "Color de piel", Settings.SKINS, "skin")
+	_cycle_row(y + ROW_H * 2, "Manos", Settings.HAND_NAMES, "hand_style")
+	_swatch_row(y + ROW_H * 3, "Color de uñas / guantes", Settings.ACCENTS, "accent")
+	_cycle_row(y + ROW_H * 4, "Fichas", Settings.TILE_NAMES, "tile_style")
+	_cycle_row(y + ROW_H * 5, "Mesa", Settings.TABLE_NAMES, "table_style")
+	_cycle_row(y + ROW_H * 6, "Tu bebida", Settings.DRINK_NAMES, "drink")
 	_text("En la partida, toca tu vaso (abajo a la derecha) para beber.", 16,
-			Color(CREAM, 0.75), Rect2(0, 986, 660, 24), HORIZONTAL_ALIGNMENT_CENTER)
+			Color(CREAM, 0.75), Rect2(0, 1000, 660, 24), HORIZONTAL_ALIGNMENT_CENTER)
 
 	_build_preview()
 	var close: FancyButton = FancyButton.new()
@@ -226,6 +227,7 @@ func _refresh() -> void:
 	_hand.style = Settings.data.hand_style
 	_hand.accent = Settings.accent_color()
 	_hand.refresh()
+	_hand.visible = Settings.data.show_hands != 0
 	for t: Tile in _tiles:
 		t.refresh_style()
 	_glass.drink = Settings.data.drink

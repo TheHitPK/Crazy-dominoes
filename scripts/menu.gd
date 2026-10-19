@@ -40,7 +40,10 @@ Si nadie puede jugar, el juego se tranca. Cada jugador cuenta los puntos de su m
 La pareja ganadora suma los puntos de [b]todas[/b] las fichas que quedaron sin jugar en las cuatro manos.
 
 [font_size=22][color=#ffd64d][b]Controles[/b][/color][/font_size]
-Tus fichas jugables brillan en dorado. Toca una para jugarla. Si cabe en los dos extremos, aparecen dos marcadores sobre la mesa: toca cerca del extremo que prefieras. Si no puedes jugar, pulsa [b]Pasar[/b]. Tu vaso es el de abajo a la derecha: tócalo para beber un trago.
+Tus fichas jugables brillan en dorado. Hay dos formas de jugarlas:
+• [b]Tocar[/b] la ficha. Si cabe en los dos extremos, aparecen dos marcadores sobre la mesa: toca cerca del que prefieras.
+• [b]Arrastrarla[/b] hasta la mesa y soltarla junto al extremo donde la quieres. Si la sueltas fuera de la mesa, vuelve a tu mano.
+Si no tienes ninguna ficha que case, [b]pasas automáticamente[/b]. Tu vaso es el de abajo a la derecha: tócalo para beber un trago.
 """
 
 var sfx: Node

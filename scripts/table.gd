@@ -15,7 +15,7 @@ static var pad := 0.0
 ## El contenido central sigue en x 0..720; la mesa crece de -side a 720+side.
 static var side := 0.0
 ## Los posavasos de abajo van por encima de las fichas del jugador.
-const CUP_BOTTOM_RAISE := 160.0
+const CUP_BOTTOM_RAISE := 196.0
 const FLOOR := Color(0.07, 0.055, 0.045)
 const RIM := 44.0
 const CUP_R := 38.0
