@@ -1,9 +1,19 @@
 # Configuración para Render (https://render.com): al conectar este repositorio
-# como "Blueprint", Render crea el servicio con estos datos.
+# como "Blueprint", Render crea los servicios con estos datos.
 services:
+  # Servidor de salas: lleva las partidas en línea.
   - type: web
     name: crazy-dominoes
     runtime: docker
     plan: free
     dockerfilePath: ./Dockerfile
+    autoDeploy: true
+
+  # Versión web del juego: los archivos ya exportados de la carpeta web/.
+  # Es un sitio estático: gratis y no se duerme.
+  - type: web
+    name: crazy-dominoes-web
+    runtime: static
+    buildCommand: "true"
+    staticPublishPath: ./web
     autoDeploy: true

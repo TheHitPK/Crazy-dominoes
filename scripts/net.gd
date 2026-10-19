@@ -79,26 +79,30 @@ func _ready() -> void:
 # ---------------------------------------------------------------- API de cliente
 
 ## Crea una sala en este teléfono para jugar en la misma wifi.
-func host_lan(player_name: String, look: Dictionary, difficulty: int) -> bool:
+## `token` es la clave privada de este jugador (Settings.player_token): con ella
+## el servidor le devuelve su asiento si se sale de una partida y vuelve a entrar.
+func host_lan(player_name: String, look: Dictionary, difficulty: int, token: String) -> bool:
 	leave()
 	if _start_server(PORT) != OK:
 		failed.emit("No se pudo abrir la sala en este teléfono.")
 		return false
 	_beacon = PacketPeerUDP.new()
 	_beacon.set_broadcast_enabled(true)
-	send("sv_create", [player_name, look, difficulty, LAN_CODE])
+	send("sv_create", [player_name, look, difficulty, LAN_CODE, token])
 	return true
 
 
 ## Crea una sala en un servidor a distancia. `code_hint` pide un código concreto (pruebas).
 func create_remote(address: String, player_name: String, look: Dictionary, difficulty: int,
-		code_hint: String = "") -> void:
-	_connect_to(address, func() -> void: sv_create.rpc_id(1, player_name, look, difficulty, code_hint), REMOTE_PATIENCE)
+		token: String, code_hint: String = "") -> void:
+	_connect_to(address, func() -> void: sv_create.rpc_id(1, player_name, look, difficulty, code_hint, token),
+			REMOTE_PATIENCE)
 
 
 ## Entra en una sala: por IP en la wifi (código vacío) o por código a distancia.
-func join(address: String, code: String, player_name: String, look: Dictionary) -> void:
-	_connect_to(address, func() -> void: sv_join.rpc_id(1, code, player_name, look),
+## Si la partida ya empezó, solo entra quien tenía asiento en ella (mismo token).
+func join(address: String, code: String, player_name: String, look: Dictionary, token: String) -> void:
+	_connect_to(address, func() -> void: sv_join.rpc_id(1, code, player_name, look, token),
 			LAN_PATIENCE if code.strip_edges() == "" else REMOTE_PATIENCE)
 
 
@@ -352,7 +356,9 @@ func _seat_of(room: Dictionary, peer: int) -> int:
 func _seats_public(room: Dictionary) -> Array:
 	var out: Array = []
 	for seat: Dictionary in room.seats:
-		out.append({"name": seat.name, "human": seat.peer != 0, "look": seat.look})
+		# "away": la persona se salió y una CPU juega por ella hasta que vuelva.
+		out.append({"name": seat.name, "human": seat.peer != 0, "look": seat.look,
+				"away": seat.peer == 0 and seat.token != ""})
 	return out
 
 
@@ -382,19 +388,25 @@ func _clean_name(player_name: String) -> String:
 	return n if n != "" else "Jugador"
 
 
+## Asiento ocupado por una CPU. Si `token` no está vacío, es el de una persona
+## que se salió con la partida en marcha y puede volver a él.
+static func _cpu_seat() -> Dictionary:
+	return {"peer": 0, "name": "", "look": {}, "token": ""}
+
+
 @rpc("any_peer", "call_remote", "reliable")
-func sv_create(player_name: String, look: Dictionary, difficulty: int, code_hint: String) -> void:
+func sv_create(player_name: String, look: Dictionary, difficulty: int, code_hint: String, token: String) -> void:
 	var id := _sender()
 	_leave_room(id)
 	var code := code_hint if code_hint != "" and not rooms.has(code_hint) else _new_code()
 	var seats: Array = []
 	for i in 4:
-		seats.append({"peer": 0, "name": "", "look": {}})
+		seats.append(_cpu_seat())
 	var room := {"code": code, "seats": seats, "difficulty": clampi(difficulty, 0, 2), "host": id,
 			"started": false, "dead": false, "state": null, "scores": [0, 0], "starter": -1,
-			"hand_no": 0, "pending": NO_MOVE, "ready": {}}
+			"hand_no": 0, "pending": NO_MOVE, "ready": {}, "history": []}
 	rooms[code] = room
-	seats[0] = {"peer": id, "name": _clean_name(player_name), "look": look}
+	seats[0] = {"peer": id, "name": _clean_name(player_name), "look": look, "token": token}
 	peer_room[id] = code
 	if dedicated:
 		print("[sala %s] creada por %s" % [code, seats[0].name])
@@ -402,7 +414,7 @@ func sv_create(player_name: String, look: Dictionary, difficulty: int, code_hint
 
 
 @rpc("any_peer", "call_remote", "reliable")
-func sv_join(code: String, player_name: String, look: Dictionary) -> void:
+func sv_join(code: String, player_name: String, look: Dictionary, token: String) -> void:
 	var id := _sender()
 	_leave_room(id)
 	var key := code.strip_edges().to_upper()
@@ -414,15 +426,47 @@ func sv_join(code: String, player_name: String, look: Dictionary) -> void:
 		_to(id, "cl_error", ["No existe esa sala."])
 		return
 	if room.started:
+		# Partida en marcha: solo vuelve quien se había salido de ella, a su mismo asiento.
+		for i in 4:
+			var seat: Dictionary = room.seats[i]
+			if seat.peer == 0 and token != "" and seat.token == token:
+				_rejoin(room, i, id)
+				return
 		_to(id, "cl_error", ["Esa partida ya empezó."])
 		return
 	for i: int in JOIN_ORDER:
 		if room.seats[i].peer == 0:
-			room.seats[i] = {"peer": id, "name": _clean_name(player_name), "look": look}
+			room.seats[i] = {"peer": id, "name": _clean_name(player_name), "look": look, "token": token}
 			peer_room[id] = key
 			_push_room(room)
 			return
 	_to(id, "cl_error", ["La sala está llena."])
+
+
+## Devuelve su asiento a un jugador que se había salido y le manda la partida
+## tal como está: sus fichas, lo jugado en la mesa y el marcador.
+func _rejoin(room: Dictionary, seat_index: int, id: int) -> void:
+	var seat: Dictionary = room.seats[seat_index]
+	seat.peer = id
+	peer_room[id] = room.code
+	# No tiene que pulsar "Siguiente mano" de una mano que no vio terminar.
+	room.ready[id] = true
+	var st: State = room.state
+	var counts: Array = []
+	for i in 4:
+		counts.append(0 if st == null else st.hands[i].size())
+	_push_room(room)
+	_to(id, "cl_event", [{"type": "resume", "you": seat_index,
+			"hand": [] if st == null else st.hands[seat_index].duplicate(),
+			"counts": counts, "history": room.history.duplicate(true),
+			"turn": -1 if st == null else st.turn, "over": st == null or st.is_over(),
+			"starter": room.starter, "scores": room.scores.duplicate(), "hand_no": room.hand_no,
+			"seats": _seats_public(room), "difficulty": room.difficulty}])
+	for other: Dictionary in room.seats:
+		if other.peer != 0 and other.peer != id:
+			_to(other.peer, "cl_event", [{"type": "back", "seat": seat_index, "name": seat.name}])
+	if dedicated:
+		print("[sala %s] %s volvió a su asiento" % [room.code, seat.name])
 
 
 ## Cambiarse a un asiento libre (ocupado por una CPU).
@@ -434,7 +478,7 @@ func sv_sit(seat: int) -> void:
 	if from < 0 or room.started or seat < 0 or seat > 3 or room.seats[seat].peer != 0:
 		return
 	room.seats[seat] = room.seats[from]
-	room.seats[from] = {"peer": 0, "name": "", "look": {}}
+	room.seats[from] = _cpu_seat()
 	_push_room(room)
 
 
@@ -504,7 +548,12 @@ func _leave_room(id: int) -> void:
 		return
 	var seat := _seat_of(room, id)
 	var gone: String = room.seats[seat].name
-	room.seats[seat] = {"peer": 0, "name": "", "look": {}}
+	if room.started:
+		# Con la partida en marcha el asiento queda reservado: lo juega una CPU,
+		# pero conserva el nombre y el token para que esa persona pueda volver.
+		room.seats[seat].peer = 0
+	else:
+		room.seats[seat] = _cpu_seat()
 	var next_host := 0
 	for s: Dictionary in room.seats:
 		if s.peer != 0:
@@ -539,9 +588,14 @@ func _run_match(room: Dictionary) -> void:
 			return
 		if room.scores[0] >= TARGET_SCORE or room.scores[1] >= TARGET_SCORE:
 			break
-	# Fin de la partida: la sala vuelve a la espera para poder jugar otra.
+	# Fin de la partida: la sala vuelve a la espera para poder jugar otra, y los
+	# asientos de quienes se fueron quedan libres.
 	room.started = false
 	room.state = null
+	room.history = []
+	for i in 4:
+		if room.seats[i].peer == 0:
+			room.seats[i] = _cpu_seat()
 	_push_room(room)
 
 
@@ -557,6 +611,9 @@ func _run_hand(room: Dictionary) -> void:
 	room.state = st
 	room.ready = {}
 	room.pending = NO_MOVE
+	# Jugadas de esta mano, en orden: [asiento, jugada]. Sirve para reconstruir
+	# la mesa a quien vuelve a entrar.
+	room.history = []
 	var seats := _seats_public(room)
 	for i in 4:
 		var peer: int = room.seats[i].peer
@@ -597,6 +654,7 @@ func _run_hand(room: Dictionary) -> void:
 			await _pause(1.0)
 		else:
 			st.apply_move(move)
+			room.history.append([seat, move])
 			_broadcast(room, {"type": "move", "seat": seat, "move": move})
 			await _pause(0.85)
 	if room.dead:

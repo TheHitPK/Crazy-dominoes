@@ -13,7 +13,7 @@ const FancyButton = preload("res://scripts/fancy_button.gd")
 
 const GOLD := Color(1.0, 0.84, 0.3)
 const CREAM := Color(0.97, 0.93, 0.82)
-const ROW_H := 108.0
+const ROW_H := 93.0
 
 var sfx: Node
 var _panel: Panel
@@ -48,14 +48,15 @@ func _ready() -> void:
 
 	# Vista previa arriba; las opciones debajo, una por fila.
 	var y := 336.0
-	_swatch_row(y, "Color de piel", Settings.SKINS, "skin")
-	_cycle_row(y + ROW_H, "Manos", Settings.HAND_NAMES, "hand_style")
-	_swatch_row(y + ROW_H * 2, "Color de uñas / guantes", Settings.ACCENTS, "accent")
-	_cycle_row(y + ROW_H * 3, "Fichas", Settings.TILE_NAMES, "tile_style")
-	_cycle_row(y + ROW_H * 4, "Mesa", Settings.TABLE_NAMES, "table_style")
-	_cycle_row(y + ROW_H * 5, "Tu bebida", Settings.DRINK_NAMES, "drink")
+	_cycle_row(y, "Manos sujetando las fichas", Settings.SHOW_HANDS_NAMES, "show_hands")
+	_swatch_row(y + ROW_H, "Color de piel", Settings.SKINS, "skin")
+	_cycle_row(y + ROW_H * 2, "Manos", Settings.HAND_NAMES, "hand_style")
+	_swatch_row(y + ROW_H * 3, "Color de uñas / guantes", Settings.ACCENTS, "accent")
+	_cycle_row(y + ROW_H * 4, "Fichas", Settings.TILE_NAMES, "tile_style")
+	_cycle_row(y + ROW_H * 5, "Mesa", Settings.TABLE_NAMES, "table_style")
+	_cycle_row(y + ROW_H * 6, "Tu bebida", Settings.DRINK_NAMES, "drink")
 	_text("En la partida, toca tu vaso (abajo a la derecha) para beber.", 16,
-			Color(CREAM, 0.75), Rect2(0, 986, 660, 24), HORIZONTAL_ALIGNMENT_CENTER)
+			Color(CREAM, 0.75), Rect2(0, 1000, 660, 24), HORIZONTAL_ALIGNMENT_CENTER)
 
 	_build_preview()
 	var close: FancyButton = FancyButton.new()
@@ -155,15 +156,17 @@ func _build_preview() -> void:
 	var origin := Vector2(30, 66)
 	# La mesa entera en miniatura. En un teléfono es más alta (Table.pad), así
 	# que se encoge para que quepa entera en el alto de la vista previa.
-	var mini := 250.0 / (Table.SCREEN.y + Table.pad * 2.0)
+	# La cuadrada de la web de escritorio (Table.side) además se limita por el ancho.
+	var full := Table.SCREEN + Vector2(Table.side, Table.pad) * 2.0
+	var mini := minf(250.0 / full.y, 150.0 / full.x)
 	var clip := Control.new()
-	clip.position = origin
-	clip.size = Vector2(Table.SCREEN.x * mini, 250)
+	clip.position = origin + Vector2(0, (250.0 - full.y * mini) * 0.5)
+	clip.size = full * mini
 	clip.clip_contents = true
 	_panel.add_child(clip)
 	_mini_table = Table.new()
 	_mini_table.scale = Vector2(mini, mini)
-	_mini_table.position = Vector2(0, Table.pad * mini)
+	_mini_table.position = Vector2(Table.side, Table.pad) * mini
 	clip.add_child(_mini_table)
 
 	# Un trozo de mesa con tu mano, tus fichas y tu vaso.
@@ -224,6 +227,7 @@ func _refresh() -> void:
 	_hand.style = Settings.data.hand_style
 	_hand.accent = Settings.accent_color()
 	_hand.refresh()
+	_hand.visible = Settings.data.show_hands != 0
 	for t: Tile in _tiles:
 		t.refresh_style()
 	_glass.drink = Settings.data.drink

@@ -9,6 +9,7 @@ const Settings = preload("res://scripts/settings.gd")
 const Table = preload("res://scripts/table.gd")
 const FancyButton = preload("res://scripts/fancy_button.gd")
 const Net = preload("res://scripts/net.gd")
+const OnlineConfig = preload("res://scripts/online_config.gd")
 
 const GOLD := Color(1.0, 0.84, 0.3)
 const CREAM := Color(0.97, 0.93, 0.82)
@@ -102,24 +103,45 @@ func _build_entry() -> void:
 	_label(_entry, "Tu nombre", 22, CREAM, Rect2(60, 176, 600, 30), HORIZONTAL_ALIGNMENT_LEFT)
 	_name = _field(_entry, Rect2(60, 208, 600, 66), "Escribe tu nombre", Settings.profile.name, 12)
 
-	_label(_entry, "En la misma wifi", 26, GOLD, Rect2(60, 300, 600, 36), HORIZONTAL_ALIGNMENT_LEFT)
-	var host_btn := _button(_entry, "Crear sala", GREEN, Rect2(60, 344, 600, 80), 30)
+	# La wifi y la sala en línea van en bloques aparte: en el navegador no se
+	# puede abrir una sala en la red local, así que ese bloque se oculta.
+	var wifi := Control.new()
+	_entry.add_child(wifi)
+	var remote := Control.new()
+	_entry.add_child(remote)
+	if OS.has_feature("web"):
+		wifi.visible = false
+		remote.position.y = -470.0
+	_label(wifi, "En la misma wifi", 26, GOLD, Rect2(60, 300, 600, 36), HORIZONTAL_ALIGNMENT_LEFT)
+	var host_btn := _button(wifi, "Crear sala", GREEN, Rect2(60, 344, 600, 80), 30)
 	host_btn.pressed.connect(_host_lan)
 	_lan_list = Control.new()
 	_lan_list.position = Vector2(60, 440)
-	_entry.add_child(_lan_list)
-	_ip = _field(_entry, Rect2(60, 700, 390, 66), "IP del anfitrión", "", 40)
-	var ip_btn := _button(_entry, "Unirse", BLUE, Rect2(466, 700, 194, 66), 26)
+	wifi.add_child(_lan_list)
+	_ip = _field(wifi, Rect2(60, 700, 390, 66), "IP del anfitrión", "", 40)
+	var ip_btn := _button(wifi, "Unirse", BLUE, Rect2(466, 700, 194, 66), 26)
 	ip_btn.pressed.connect(func() -> void: _join(_ip.text, ""))
 
-	_label(_entry, "A distancia", 26, GOLD, Rect2(60, 800, 600, 36), HORIZONTAL_ALIGNMENT_LEFT)
-	_server = _field(_entry, Rect2(60, 842, 600, 66), "Dirección del servidor", Settings.profile.server, 120)
-	var create_btn := _button(_entry, "Crear sala", GREEN, Rect2(60, 924, 250, 72), 26)
+	_label(remote, "En línea (a distancia)", 26, GOLD, Rect2(60, 800, 600, 36), HORIZONTAL_ALIGNMENT_LEFT)
+	_server = _field(remote, Rect2(60, 842, 600, 66), "Dirección del servidor", Settings.profile.server, 120)
+	# Con la dirección del servidor incorporada en el juego no se pide: uno
+	# crea la sala y los demás solo escriben el código.
+	var built_in := OnlineConfig.SERVER_URL != ""
+	_server.visible = not built_in
+	var y := 846.0 if built_in else 924.0
+	var create_btn := _button(remote, "Crear sala en línea", GREEN, Rect2(60, y, 600, 80), 30)
 	create_btn.pressed.connect(_create_remote)
-	_code = _field(_entry, Rect2(326, 924, 150, 72), "Código", "", 4)
+	_code = _field(remote, Rect2(60, y + 96.0, 290, 76), "Código de la sala", Settings.profile.last_code, 4)
 	_code.alignment = HORIZONTAL_ALIGNMENT_CENTER
-	var join_btn := _button(_entry, "Unirse", BLUE, Rect2(492, 924, 168, 72), 26)
-	join_btn.pressed.connect(func() -> void: _join(_server.text, _code.text))
+	var join_btn := _button(remote, "Unirse", BLUE, Rect2(366, y + 96.0, 294, 76), 28)
+	join_btn.pressed.connect(_join_remote)
+	if not built_in:
+		# Sin dirección incorporada hace falta una línea más: la pantalla se compacta.
+		create_btn.size.y = 60
+		_code.position.y = y + 68.0
+		_code.size.y = 60
+		join_btn.position.y = y + 68.0
+		join_btn.size.y = 60
 
 
 func _show_entry() -> void:
@@ -158,23 +180,35 @@ func _player_name() -> String:
 	return n
 
 
+## Servidor a distancia: el incorporado en el juego o, si no hay, el escrito a mano.
+func _server_address() -> String:
+	return OnlineConfig.SERVER_URL if OnlineConfig.SERVER_URL != "" else _server.text
+
+
 func _host_lan() -> void:
 	_status.text = ""
 	net.listen_lan(false)
-	if not net.host_lan(_player_name(), Settings.my_look(), 1):
+	if not net.host_lan(_player_name(), Settings.my_look(), 1, Settings.player_token()):
 		net.listen_lan(true)
 
 
 func _create_remote() -> void:
 	_status.text = REMOTE_WAIT
 	net.listen_lan(false)
-	net.create_remote(_server.text, _player_name(), Settings.my_look(), 1)
+	net.create_remote(_server_address(), _player_name(), Settings.my_look(), 1, Settings.player_token())
+
+
+func _join_remote() -> void:
+	if _code.text.strip_edges() == "":
+		_status.text = "Escribe el código de la sala."
+		return
+	_join(_server_address(), _code.text)
 
 
 func _join(address: String, code: String) -> void:
 	_status.text = "Conectando…" if code.strip_edges() == "" else REMOTE_WAIT
 	net.listen_lan(false)
-	net.join(address, code, _player_name(), Settings.my_look())
+	net.join(address, code, _player_name(), Settings.my_look(), Settings.player_token())
 
 
 # -------------------------------------------------------------------- vista: sala
@@ -204,9 +238,13 @@ func _on_room(info: Dictionary) -> void:
 	_status.text = ""
 	net.listen_lan(false)
 	var lan: bool = info.code == Net.LAN_CODE
-	_lobby_title.text = "Sala en tu wifi" if lan else "Sala  %s" % info.code
+	if not lan and Settings.profile.last_code != info.code:
+		# Se recuerda la sala: si me salgo sin querer, el código ya está escrito para volver.
+		Settings.profile.last_code = info.code
+		Settings.save()
+	_lobby_title.text = "Sala en tu wifi" if lan else "Código:  %s" % info.code
 	if not lan:
-		_lobby_hint.text = "Pasa este código a tus amigos para que entren."
+		_lobby_hint.text = "Pasa este código a tus amigos.\nSolo tienen que escribirlo y pulsar Unirse."
 	elif info.host:
 		_lobby_hint.text = "Tus amigos la verán en \"Salas encontradas\".\nSi no, que escriban esta IP: %s" % ", ".join(PackedStringArray(Net.local_ips()))
 	else:
@@ -238,8 +276,9 @@ func _sit(v: int) -> void:
 
 
 func _on_game_event() -> void:
-	# El primer evento de una partida es el reparto: se pasa a la mesa.
-	if not _started and not net.events.is_empty() and net.events[0].type == "hand_start":
+	# El primer evento de una partida es el reparto (o, si vuelvo a una partida
+	# en marcha, su estado actual): se pasa a la mesa.
+	if not _started and not net.events.is_empty() and net.events[0].type in ["hand_start", "resume"]:
 		_started = true
 		start_game.emit()
 
