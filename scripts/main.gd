@@ -11,6 +11,7 @@ extends Node
 ##   --diff=N        dificultad 0, 1 o 2 para --auto y --play
 ##   --customize     abre el menú con el panel de personalización
 ##   --options       con --play o --auto, abre el panel de ajustes de la partida
+##   --shuffle=N     con --play o --auto, fuerza la forma de revolver N (0..4)
 ##   --online        abre directamente la pantalla "Jugar con amigos"
 ##   --square        fuerza la mesa cuadrada de la web de escritorio
 ##   --look=k:v,...  fuerza ajustes de aspecto, p. ej. --look=tile_style:1,hand_style:2
@@ -25,6 +26,10 @@ extends Node
 ##   --net-humans=N        el anfitrión empieza cuando haya N personas (por defecto 2)
 ##   --net-name=NOMBRE     nombre del jugador de prueba
 ##   --net-token=CLAVE     clave del jugador (la misma clave recupera su asiento al volver)
+##   --net-public          el anfitrión de prueba hace pública su sala
+##   --net-browse=DIR      pide la lista de salas públicas y entra en la primera
+##   --net-say=TEXTO       al empezar la partida manda TEXTO y el emoji 0 al chat (y muestra lo que llega)
+##   --chat                abre el chat en la sala y, ya en la partida, a los 7 s
 
 const Menu = preload("res://scripts/menu.gd")
 const Game = preload("res://scripts/game.gd")
@@ -94,12 +99,14 @@ func _ready() -> void:
 			Settings.data[pair.get_slice(":", 0)] = int(pair.get_slice(":", 1))
 	var diff := clampi(int(args.get("--diff", "2")), 0, 2)
 
-	if args.has("--net-host") or args.has("--net-create") or args.has("--net-join"):
+	if args.has("--net-host") or args.has("--net-create") or args.has("--net-join") or args.has("--net-browse"):
 		# Con --online se ve la sala (para capturas); no combinar con una partida de prueba.
 		_switch(_make_online.bind("") if args.has("--online") else _make_menu)
 		_net_test(args)
 	elif args.has("--auto") or args.has("--play"):
 		_switch(_make_game.bind(diff, args.has("--auto")))
+		if args.has("--shuffle"):
+			current.force_shuffle = int(args["--shuffle"])
 		if args.has("--options"):
 			current.call_deferred("_show_options")
 	elif args.has("--online"):
@@ -235,18 +242,38 @@ func _net_test(args: Dictionary) -> void:
 		for seat: Dictionary in info.seats:
 			if seat.human:
 				count += 1
-		print("[%s] sala %s: %d personas, anfitrión=%s" % [player, info.code, count, info.host])
+		print("[%s] sala %s: %d personas, anfitrión=%s, pública=%s" % [player, info.code, count, info.host, info.get("public", false)])
+		if args.has("--net-public") and info.host and not info.get("public", false):
+			net.set_public(true)
+		if args.has("--chat") and current is Online and not state.has("chat"):
+			state.chat = true
+			current.call_deferred("_open_chat")
 		if info.host and not info.started and not state.in_game and count >= humans:
 			net.send("sv_start"))
+	net.public_rooms.connect(func(list: Array) -> void:
+		print("[%s] salas públicas: %s" % [player, str(list)])
+		if args.has("--net-browse") and not list.is_empty() and net.room_info.is_empty():
+			net.join("", str(list[0].code), player, Settings.my_look(), token))
+	net.chat_message.connect(func(msg: Dictionary) -> void:
+		print("[%s] chat de %s: %s %s" % [player, msg.name, "emoji" if int(msg.kind) == 1 else "texto", msg.text]))
 	net.game_event.connect(func() -> void:
 		if not state.in_game and not net.events.is_empty() and net.events[0].type in ["hand_start", "resume"]:
 			state.in_game = true
+			if args.has("--net-say"):
+				get_tree().create_timer(2.0).timeout.connect(func() -> void:
+					net.chat(0, args["--net-say"])
+					net.chat(0, "demasiado pronto")
+					get_tree().create_timer(4.0, true, false, true).timeout.connect(func() -> void: net.chat(1, "0")))
+			if args.has("--chat"):
+				get_tree().create_timer(7.0, true, false, true).timeout.connect(func() -> void: current._open_chat())
 			_switch(_make_net_game.bind(true)))
 	var connect_now := func() -> void:
 		if args.has("--net-host"):
 			net.host_lan(player, Settings.my_look(), 0, token)
 		elif args.has("--net-create"):
-			net.create_remote(args["--net-create"], player, Settings.my_look(), 0, token, "TEST")
+			net.create_remote(args["--net-create"], player, Settings.my_look(), 0, token, args.get("--net-code", "TEST"))
+		elif args.has("--net-browse"):
+			net.browse(args["--net-browse"])
 		else:
 			net.join(args["--net-join"], args.get("--net-code", ""), player, Settings.my_look(), token)
 	net.failed.connect(func(message: String) -> void:

@@ -21,9 +21,19 @@ signal failed(message: String)
 signal closed
 ## Cambió la lista de salas vistas en la wifi (`lan_rooms`).
 signal lan_changed
+## Llegó la lista de salas públicas del servidor: [{code, host, players, difficulty}].
+signal public_rooms(list: Array)
+## Llegó un mensaje del chat de la sala (ver Lobby.cl_chat y chat_log).
+signal chat_message(msg: Dictionary)
+## Cambió la lista de jugadores que silencié.
+signal mute_changed
+## Nueva medida del retraso con el servidor, en ms (-1 = no responde).
+signal latency_changed(ms: int)
 
 const State = preload("res://scripts/domino_state.gd")
 const AI = preload("res://scripts/domino_ai.gd")
+const Avatar = preload("res://scripts/avatar.gd")
+const Chat = preload("res://scripts/chat.gd")
 
 const PORT := 8910
 const BEACON_PORT := 8911
@@ -36,6 +46,9 @@ const LAN_PATIENCE := 7.0
 const REMOTE_PATIENCE := 80.0
 ## Cada cuánto manda el cliente una señal para que no le corten la conexión por inactiva.
 const PING_EVERY := 20.0
+## Cada cuánto se mide el retraso con el servidor, y cuánto sin respuesta es "sin señal".
+const RTT_EVERY := 2.0
+const RTT_LOST_MS := 7000
 ## Orden en que se sientan los que llegan: primero de compañero del anfitrión.
 const JOIN_ORDER := [2, 1, 3, 0]
 
@@ -68,7 +81,71 @@ var _beacon_timer := 0.0
 var _ping_timer := 0.0
 
 
+## Órdenes de red añadidas después de la primera versión (salas públicas).
+## Van en un nodo hijo propio y no en este: Godot numera las órdenes de cada
+## nodo por orden alfabético, y añadirlas aquí cambiaría los números de las de
+## siempre, con lo que las APK ya instaladas dejarían de entenderse con el
+## servidor. Ruta: /root/Main/Net/Lobby.
+class Lobby extends Node:
+	var net: Node
+
+	@rpc("any_peer", "call_remote", "reliable")
+	func sv_list_rooms() -> void:
+		net._send_public_rooms(multiplayer.get_remote_sender_id())
+
+	@rpc("any_peer", "call_remote", "reliable")
+	func sv_set_public(on: bool) -> void:
+		net._set_room_public(multiplayer.get_remote_sender_id(), on)
+
+	@rpc("authority", "call_remote", "reliable")
+	func cl_rooms(list: Array) -> void:
+		net.public_rooms.emit(list)
+
+	## Este cliente entiende el chat: el servidor solo se lo manda a quien lo dice,
+	## para no enviar órdenes desconocidas a las versiones viejas.
+	@rpc("any_peer", "call_remote", "reliable")
+	func sv_hello() -> void:
+		net._chat_peers[multiplayer.get_remote_sender_id()] = true
+
+	@rpc("any_peer", "call_remote", "reliable")
+	func sv_chat(kind: int, text: String) -> void:
+		net._chat(multiplayer.get_remote_sender_id(), kind, text)
+
+	@rpc("authority", "call_remote", "reliable")
+	func cl_chat(msg: Dictionary) -> void:
+		net._got_chat(msg)
+
+	## Medida del retraso: el servidor devuelve al momento la hora que le llega.
+	@rpc("any_peer", "call_remote", "reliable")
+	func sv_rtt(sent_at: int) -> void:
+		cl_rtt.rpc_id(multiplayer.get_remote_sender_id(), sent_at)
+
+	@rpc("authority", "call_remote", "reliable")
+	func cl_rtt(sent_at: int) -> void:
+		net._got_rtt(sent_at)
+
+
+var _lobby: Lobby
+## Chat: mensajes recibidos en esta sala (los últimos CHAT_KEEP), para verlos
+## tanto en la sala como en la mesa.
+var chat_log: Array = []
+var _said_hello := false
+## Servidor: quién entiende el chat y cuándo habló cada uno por última vez.
+var _chat_peers := {}
+var _chat_last := {}
+## Nombres de los jugadores que silencié: no veo sus mensajes ni su foto.
+var muted := {}
+## Retraso de ida y vuelta con el servidor (ms); -1 mientras no se sabe.
+var latency_ms := -1
+var _rtt_timer := 0.0
+var _last_rtt := 0
+
+
 func _ready() -> void:
+	_lobby = Lobby.new()
+	_lobby.name = "Lobby"
+	_lobby.net = self
+	add_child(_lobby)
 	_rng.randomize()
 	multiplayer.connected_to_server.connect(_connected)
 	multiplayer.connection_failed.connect(_connection_failed)
@@ -102,8 +179,34 @@ func create_remote(address: String, player_name: String, look: Dictionary, diffi
 ## Entra en una sala: por IP en la wifi (código vacío) o por código a distancia.
 ## Si la partida ya empezó, solo entra quien tenía asiento en ella (mismo token).
 func join(address: String, code: String, player_name: String, look: Dictionary, token: String) -> void:
+	if _browsing():
+		# Ya estoy conectado mirando las salas públicas: se entra sin reconectar.
+		sv_join.rpc_id(1, code, player_name, look, token)
+		return
 	_connect_to(address, func() -> void: sv_join.rpc_id(1, code, player_name, look, token),
 			LAN_PATIENCE if code.strip_edges() == "" else REMOTE_PATIENCE)
+
+
+## Pide al servidor la lista de salas públicas (conectándose si hace falta).
+## La respuesta llega por la señal `public_rooms`.
+func browse(address: String) -> void:
+	if _browsing():
+		_lobby.sv_list_rooms.rpc_id(1)
+	else:
+		_connect_to(address, func() -> void: _lobby.sv_list_rooms.rpc_id(1), REMOTE_PATIENCE)
+
+
+## Conectado a un servidor a distancia, pero todavía fuera de cualquier sala.
+func _browsing() -> bool:
+	return online and not serving and room_info.is_empty()
+
+
+## La sala en la que estoy pasa a ser pública (aparece en la lista) o privada (solo con código).
+func set_public(on: bool) -> void:
+	if serving:
+		_set_room_public(1, on)
+	elif online:
+		_lobby.sv_set_public.rpc_id(1, on)
 
 
 ## Manda una orden al servidor (que puede ser este mismo teléfono).
@@ -138,6 +241,11 @@ func leave() -> void:
 	_attempt += 1
 	events.clear()
 	room_info = {}
+	chat_log.clear()
+	_said_hello = false
+	muted.clear()
+	latency_ms = -1
+	_last_rtt = 0
 
 
 ## Empieza a escuchar las salas anunciadas en la wifi.
@@ -236,6 +344,9 @@ func _server_lost() -> void:
 @rpc("authority", "call_remote", "reliable")
 func cl_room(info: Dictionary) -> void:
 	room_info = info
+	if not _said_hello and not serving:
+		_said_hello = true
+		_lobby.sv_hello.rpc_id(1)
 	room_changed.emit(info)
 
 
@@ -258,6 +369,14 @@ func _process(delta: float) -> void:
 		if _ping_timer <= 0.0:
 			_ping_timer = PING_EVERY
 			sv_ping.rpc_id(1)
+		_rtt_timer -= delta
+		if _rtt_timer <= 0.0:
+			_rtt_timer = RTT_EVERY
+			_lobby.sv_rtt.rpc_id(1, Time.get_ticks_msec())
+			# Sin respuesta en un rato: la conexión está caída o muy mala.
+			if _last_rtt > 0 and Time.get_ticks_msec() - _last_rtt > RTT_LOST_MS and latency_ms != -1:
+				latency_ms = -1
+				latency_changed.emit(-1)
 	if _beacon != null and serving:
 		_beacon_timer -= delta
 		if _beacon_timer <= 0.0:
@@ -368,7 +487,7 @@ func _push_room(room: Dictionary) -> void:
 		var peer: int = room.seats[i].peer
 		if peer != 0:
 			_to(peer, "cl_room", [{"code": room.code, "difficulty": room.difficulty, "started": room.started,
-					"host": peer == room.host, "you": i, "seats": seats}])
+					"host": peer == room.host, "you": i, "seats": seats, "public": room.get("public", false)}])
 
 
 func _new_code() -> String:
@@ -384,8 +503,21 @@ func _new_code() -> String:
 
 
 func _clean_name(player_name: String) -> String:
-	var n := player_name.strip_edges().left(12)
+	var n := Chat.censor(player_name.strip_edges().left(12))
 	return n if n != "" else "Jugador"
+
+
+## Solo pasa lo que el juego entiende del aspecto de un jugador, y la foto si
+## es pequeña: lo que manda cada uno llega a todos los de la sala.
+static func _clean_look(look: Dictionary) -> Dictionary:
+	var out := {}
+	for key in ["skin", "hand_style", "accent", "drink", "avatar"]:
+		if look.has(key):
+			out[key] = int(look[key])
+	var photo = look.get("photo", null)
+	if photo is PackedByteArray and photo.size() <= Avatar.MAX_NET_PHOTO:
+		out["photo"] = photo
+	return out
 
 
 ## Asiento ocupado por una CPU. Si `token` no está vacío, es el de una persona
@@ -404,9 +536,11 @@ func sv_create(player_name: String, look: Dictionary, difficulty: int, code_hint
 		seats.append(_cpu_seat())
 	var room := {"code": code, "seats": seats, "difficulty": clampi(difficulty, 0, 2), "host": id,
 			"started": false, "dead": false, "state": null, "scores": [0, 0], "starter": -1,
-			"hand_no": 0, "pending": NO_MOVE, "ready": {}, "history": []}
+			"hand_no": 0, "pending": NO_MOVE, "ready": {}, "history": [],
+			# Privada por defecto: solo se entra con el código.
+			"public": false}
 	rooms[code] = room
-	seats[0] = {"peer": id, "name": _clean_name(player_name), "look": look, "token": token}
+	seats[0] = {"peer": id, "name": _clean_name(player_name), "look": _clean_look(look), "token": token}
 	peer_room[id] = code
 	if dedicated:
 		print("[sala %s] creada por %s" % [code, seats[0].name])
@@ -436,7 +570,7 @@ func sv_join(code: String, player_name: String, look: Dictionary, token: String)
 		return
 	for i: int in JOIN_ORDER:
 		if room.seats[i].peer == 0:
-			room.seats[i] = {"peer": id, "name": _clean_name(player_name), "look": look, "token": token}
+			room.seats[i] = {"peer": id, "name": _clean_name(player_name), "look": _clean_look(look), "token": token}
 			peer_room[id] = key
 			_push_room(room)
 			return
@@ -524,6 +658,96 @@ func sv_ready() -> void:
 		room.ready[_sender()] = true
 
 
+## Manda a `peer` la lista de salas públicas que aún no empezaron y tienen sitio libre.
+func _send_public_rooms(peer: int) -> void:
+	var out: Array = []
+	for room: Dictionary in rooms.values():
+		if not room.get("public", false) or room.started or room.dead:
+			continue
+		var players := 0
+		var host_name := ""
+		for seat: Dictionary in room.seats:
+			if seat.peer != 0:
+				players += 1
+				if seat.peer == room.host:
+					host_name = seat.name
+		if players < 4:
+			out.append({"code": room.code, "host": host_name, "players": players, "difficulty": room.difficulty})
+	if multiplayer.get_peers().has(peer):
+		_lobby.cl_rooms.rpc_id(peer, out)
+
+
+## El anfitrión decide si su sala sale en la lista pública o solo se entra con código.
+func _set_room_public(peer: int, on: bool) -> void:
+	var room := _room_of(peer)
+	if room.is_empty() or room.host != peer or room.started or room.code == LAN_CODE:
+		return
+	room.public = on
+	_push_room(room)
+
+
+# -------------------------------------------------------------------------- chat
+
+## Manda un mensaje al chat de mi sala: texto (Chat.TEXT) o el índice de un
+## emoji (Chat.EMOJI) en Chat.EMOJIS.
+func chat(kind: int, text: String) -> void:
+	if serving:
+		_chat(1, kind, text)
+	elif online:
+		_lobby.sv_chat.rpc_id(1, kind, text)
+
+
+func _got_rtt(sent_at: int) -> void:
+	_last_rtt = Time.get_ticks_msec()
+	latency_ms = _last_rtt - sent_at
+	latency_changed.emit(latency_ms)
+
+
+## Silencia (o deja de silenciar) a un jugador de la sala, solo en esta pantalla.
+func set_muted(player_name: String, on: bool) -> void:
+	if on:
+		muted[player_name] = true
+	else:
+		muted.erase(player_name)
+	mute_changed.emit()
+
+
+func _got_chat(msg: Dictionary) -> void:
+	if muted.has(str(msg.name)):
+		return
+	chat_log.append(msg)
+	if chat_log.size() > Chat.KEEP:
+		chat_log.pop_front()
+	chat_message.emit(msg)
+
+
+## Servidor: revisa el mensaje y lo reparte a todos los de la sala. Sin
+## mensajes vacíos ni larguísimos, y uno cada Chat.GAP_MS como mucho por jugador.
+func _chat(peer: int, kind: int, text: String) -> void:
+	var room := _room_of(peer)
+	var seat := -1 if room.is_empty() else _seat_of(room, peer)
+	if seat < 0:
+		return
+	var now := Time.get_ticks_msec()
+	if _chat_last.has(peer) and now - int(_chat_last[peer]) < Chat.GAP_MS:
+		return
+	var clean := text.strip_edges().left(Chat.MAX_LENGTH)
+	if kind == Chat.EMOJI:
+		if not clean.is_valid_int() or clean.to_int() < 0 or clean.to_int() >= Chat.EMOJIS.size():
+			return
+	elif kind != Chat.TEXT or clean == "":
+		return
+	else:
+		clean = Chat.censor(clean)
+	_chat_last[peer] = now
+	var msg := {"seat": seat, "name": room.seats[seat].name, "kind": kind, "text": clean}
+	for s: Dictionary in room.seats:
+		if s.peer == 1 and not dedicated:
+			_got_chat(msg)
+		elif s.peer != 0 and _chat_peers.has(s.peer) and multiplayer.get_peers().has(s.peer):
+			_lobby.cl_chat.rpc_id(s.peer, msg)
+
+
 ## Señal de vida: los proxys de la nube cierran las conexiones que no mandan nada.
 @rpc("any_peer", "call_remote", "reliable")
 func sv_ping() -> void:
@@ -536,6 +760,8 @@ func sv_leave() -> void:
 
 
 func _peer_left(id: int) -> void:
+	_chat_peers.erase(id)
+	_chat_last.erase(id)
 	if serving:
 		_leave_room(id)
 

@@ -7,6 +7,7 @@ signal open_online
 const Tile = preload("res://scripts/tile.gd")
 const Table = preload("res://scripts/table.gd")
 const FancyButton = preload("res://scripts/fancy_button.gd")
+const UI = preload("res://scripts/ui_theme.gd")
 const Customize = preload("res://scripts/customize.gd")
 
 const GOLD := Color(1.0, 0.84, 0.3)
@@ -15,35 +16,38 @@ const DIFFICULTIES := [
 	["Intermedio", "Sueltan fichas pesadas y cuidan su mano", Color(0.85, 0.55, 0.12)],
 	["Difícil", "Cuentan fichas, leen tus pases y simulan la mano", Color(0.78, 0.2, 0.18)],
 ]
-const RULES := """[font_size=22][color=#ffd64d][b]Objetivo[/b][/color][/font_size]
+const RULES := """[font_size=30][color=#ffd64d][b]Objetivo[/b][/color][/font_size]
 Dominó en parejas: tú y tu compañero (sentado enfrente) contra las dos CPU de los lados. Gana la partida la primera pareja que llegue a [b]100 puntos[/b].
 
-[font_size=22][color=#ffd64d][b]Reparto[/b][/color][/font_size]
+[font_size=30][color=#ffd64d][b]Reparto[/b][/color][/font_size]
 Se juega con las 28 fichas del doble seis. Se revuelven boca abajo y cada jugador toma 7. No sobra ninguna, así que [b]no se roba[/b].
 
-[font_size=22][color=#ffd64d][b]Salida[/b][/color][/font_size]
+[font_size=30][color=#ffd64d][b]Salida[/b][/color][/font_size]
 En la primera mano sale quien tenga el [b]doble seis[/b] y debe abrir con esa ficha. En las siguientes manos sale el jugador que ganó la mano anterior, con la ficha que quiera. Si la mano quedó empatada, repite el mismo jugador.
 
-[font_size=22][color=#ffd64d][b]Turnos[/b][/color][/font_size]
+[font_size=30][color=#ffd64d][b]Turnos[/b][/color][/font_size]
 El turno pasa de jugador en jugador alrededor de la mesa, alternando parejas. En tu turno colocas una ficha que tenga el mismo número que uno de los dos extremos abiertos de la cadena. Los dobles se colocan atravesados.
 
-[font_size=22][color=#ffd64d][b]Pasar[/b][/color][/font_size]
+[font_size=30][color=#ffd64d][b]Pasar[/b][/color][/font_size]
 Si ninguna de tus fichas casa con los extremos, pasas. Si tienes una ficha jugable estás obligado a jugar. ¡Ojo!: cuando alguien pasa, todos saben qué números no tiene.
 
-[font_size=22][color=#ffd64d][b]Dominar[/b][/color][/font_size]
+[font_size=30][color=#ffd64d][b]Dominar[/b][/color][/font_size]
 El primer jugador que coloca su última ficha [b]domina[/b] y gana la mano para su pareja.
 
-[font_size=22][color=#ffd64d][b]Tranca[/b][/color][/font_size]
+[font_size=30][color=#ffd64d][b]Tranca[/b][/color][/font_size]
 Si nadie puede jugar, el juego se tranca. Cada jugador cuenta los puntos de su mano y gana la pareja del jugador que tenga [b]menos puntos[/b]. Si los dos mejores son de parejas contrarias y empatan, nadie suma.
 
-[font_size=22][color=#ffd64d][b]Puntuación[/b][/color][/font_size]
+[font_size=30][color=#ffd64d][b]Puntuación[/b][/color][/font_size]
 La pareja ganadora suma los puntos de [b]todas[/b] las fichas que quedaron sin jugar en las cuatro manos.
 
-[font_size=22][color=#ffd64d][b]Controles[/b][/color][/font_size]
+[font_size=30][color=#ffd64d][b]Controles[/b][/color][/font_size]
 Tus fichas jugables brillan en dorado. Hay dos formas de jugarlas:
 • [b]Tocar[/b] la ficha. Si cabe en los dos extremos, aparecen dos marcadores sobre la mesa: toca cerca del que prefieras.
 • [b]Arrastrarla[/b] hasta la mesa y soltarla junto al extremo donde la quieres. Si la sueltas fuera de la mesa, vuelve a tu mano.
 Si no tienes ninguna ficha que case, [b]pasas automáticamente[/b]. Tu vaso es el de abajo a la derecha: tócalo para beber un trago.
+En partidas con amigos, el botón [b]Chat[/b] abre el chat de la sala: emojis, frases rápidas o lo que quieras escribir.
+
+[font_size=22][color=#bfb39a]Emojis del chat: Twemoji, de Twitter, Inc. y colaboradores, con licencia CC-BY 4.0.[/color][/font_size]
 """
 
 var sfx: Node
@@ -79,22 +83,22 @@ func _ready() -> void:
 	var bob := create_tween().set_loops()
 	bob.tween_property(title, "position:y", 160.0, 1.6).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
 	bob.tween_property(title, "position:y", 146.0, 1.6).set_trans(Tween.TRANS_SINE).set_ease(Tween.EASE_IN_OUT)
-	_label("Dominó en parejas  ·  2 contra 2", 26, Color(0.97, 0.93, 0.82), Rect2(0, 430, 720, 40))
+	_label("Dominó en parejas  ·  2 contra 2", UI.BODY, UI.CREAM, Rect2(0, 428, 720, 44))
 
 	for i in DIFFICULTIES.size():
 		var d: Array = DIFFICULTIES[i]
 		var y := 510.0 + i * 138.0
-		var b := _button(d[0], d[2], Rect2(110, y, 500, 86), 38, 0.25 + i * 0.12)
+		var b := _button(d[0], d[2], Rect2(110, y, 500, 88), 38, 0.25 + i * 0.12)
 		b.pressed.connect(func() -> void: start_game.emit(i))
-		_label(d[1], 19, Color(0.95, 0.9, 0.78, 0.9), Rect2(40, y + 90.0, 640, 28))
+		_label(d[1], UI.CAPTION, UI.CREAM_MUTED, Rect2(30, y + 92.0, 660, 34))
 
-	var friends_btn := _button("Jugar con amigos", Color(0.15, 0.5, 0.6), Rect2(110, 924, 500, 80), 32, 0.6)
+	var friends_btn := _button("Jugar con amigos", Color(0.15, 0.5, 0.6), Rect2(110, 924, 500, UI.TOUCH), 34, 0.6)
 	friends_btn.pressed.connect(func() -> void: open_online.emit())
-	var rules_btn := _button("Reglas", Color(0.3, 0.42, 0.6), Rect2(60, 1028, 290, 72), 28, 0.68)
+	var rules_btn := _button("Reglas", Color(0.3, 0.42, 0.6), Rect2(60, 1026, 290, UI.TOUCH), UI.BUTTON, 0.68)
 	rules_btn.pressed.connect(_toggle_rules.bind(true))
-	var look_btn := _button("Personalizar", Color(0.55, 0.3, 0.6), Rect2(370, 1028, 290, 72), 28, 0.74)
+	var look_btn := _button("Personalizar", Color(0.55, 0.3, 0.6), Rect2(370, 1026, 290, UI.TOUCH), UI.BUTTON, 0.74)
 	look_btn.pressed.connect(open_customize)
-	var quit_btn := _button("Salir", Color(0.45, 0.33, 0.22), Rect2(215, 1120, 290, 64), 26, 0.8)
+	var quit_btn := _button("Salir", Color(0.45, 0.33, 0.22), Rect2(215, 1128, 290, UI.TOUCH), UI.BUTTON, 0.8)
 	quit_btn.pressed.connect(func() -> void: get_tree().quit())
 	# iOS no permite que una app se cierre sola, y en el navegador no tiene sentido.
 	quit_btn.visible = OS.get_name() != "iOS" and not OS.has_feature("web")
@@ -118,7 +122,7 @@ func open_customize() -> void:
 
 ## Aplica al fondo del menú el aspecto recién elegido.
 func _apply_look() -> void:
-	_table.queue_redraw()
+	_table.refresh()
 	for t: Tile in _floating:
 		t.refresh_style()
 
@@ -220,8 +224,8 @@ func _build_rules() -> void:
 	var body := RichTextLabel.new()
 	body.bbcode_enabled = true
 	body.text = RULES
-	body.add_theme_font_size_override("normal_font_size", 19)
-	body.add_theme_font_size_override("bold_font_size", 19)
+	body.add_theme_font_size_override("normal_font_size", UI.CAPTION)
+	body.add_theme_font_size_override("bold_font_size", UI.CAPTION)
 	body.add_theme_color_override("default_color", Color(0.97, 0.93, 0.82))
 	# El texto va dentro de un ScrollContainer para poder deslizarlo con el dedo.
 	body.fit_content = true
@@ -236,9 +240,9 @@ func _build_rules() -> void:
 	pn.add_child(scroll)
 
 	var close: FancyButton = FancyButton.new()
-	close.setup("Entendido", Color(0.25, 0.62, 0.3), 24)
-	close.position = Vector2(200, 950)
-	close.size = Vector2(260, 68)
+	close.setup("Entendido", UI.PRIMARY, UI.BUTTON)
+	close.position = Vector2(200, 940)
+	close.size = Vector2(260, UI.TOUCH)
 	pn.add_child(close)
 	close.pressed.connect(_click)
 	close.pressed.connect(_toggle_rules.bind(false))

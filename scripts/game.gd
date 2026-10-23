@@ -17,11 +17,17 @@ const FancyButton = preload("res://scripts/fancy_button.gd")
 const Settings = preload("res://scripts/settings.gd")
 const Glass = preload("res://scripts/glass.gd")
 const ChalkBoard = preload("res://scripts/chalk_board.gd")
+const UI = preload("res://scripts/ui_theme.gd")
+const Avatar = preload("res://scripts/avatar.gd")
+const Chat = preload("res://scripts/chat.gd")
+const SignalMeter = preload("res://scripts/signal_meter.gd")
 
 const TARGET_SCORE := 100
 const BOARD_SCALE := 1.25
 ## Radio (en unidades de pantalla) dentro del cual un toque cuenta como acierto.
 const TOUCH_RADIUS := 80.0
+## Formas de revolver las fichas antes de repartir (ver _shuffle_target).
+const SHUFFLES := ["sopa", "remolino", "montones", "ola", "explosion"]
 ## Segundos que se muestra que no tengo jugada antes de pasar solo.
 const PASS_PAUSE := 0.9
 ## Cuánto hay que mover el dedo sobre una ficha para que cuente como arrastre y no como toque.
@@ -48,6 +54,8 @@ const CPU_LOOKS := [
 ]
 ## Posavasos de cada jugador (a su derecha): índice en Table.cup_centers().
 const CUP_OF := [3, 1, 0, 2]
+## Avatar de las CPU (índice en Avatar.ICON_NAMES); el del jugador 0 sale de los ajustes.
+const CPU_AVATARS := [0, Avatar.BOLT, Avatar.CROWN, Avatar.MOON]
 const GOLD := Color(1.0, 0.84, 0.3)
 const CREAM := Color(0.97, 0.93, 0.82)
 ## Interruptores de sonido del panel de ajustes: clave en Settings.audio -> texto.
@@ -101,6 +109,7 @@ var ghosts: Array = []
 var hud: Control
 var plates: Array = []
 var plate_labels: Array = []
+var avatars: Array = []
 var glasses: Array = []
 var boards: Array = []
 var info_lbl: Label
@@ -110,6 +119,10 @@ var end_panel: Panel
 var opt_panel: Panel
 var _sound_btns := {}
 var _hands_btn: FancyButton
+## Chat de la sala (solo en partidas en red) y mensajes sin leer.
+var _chat: Chat
+var _chat_btn: FancyButton
+var _unread := 0
 var confetti: CPUParticles2D
 
 var _awaiting := false
@@ -122,6 +135,9 @@ var _press_pos := Vector2.ZERO
 ## Ficha que se está arrastrando y extremos en los que puede caer.
 var _drag: Tile
 var _drag_sides: Array = []
+var _last_shuffle := -1
+## Pruebas: fuerza una forma de revolver (índice en SHUFFLES); -1 = al azar.
+var force_shuffle := -1
 var _last: Tile
 var _ai_task := -1
 var _banner_tw: Tween
@@ -187,8 +203,10 @@ func _layout() -> void:
 	# Tus fichas no van pegadas al borde de abajo: queda sitio para que se vean
 	# la palma y los pulgares que las sujetan.
 	seat_pos = [Vector2(360, 1140.0 + p), Vector2(636.0 + s, mid), Vector2(360, 92.0 - p), Vector2(84.0 - s, mid)]
-	plate_rect = [Rect2(396, 922.0 + p, 150, 30), Rect2(586.0 + s, mid - 172.0, 124, 52),
-			Rect2(285, 126.0 - p, 150, 30), Rect2(10.0 - s, mid - 172.0, 124, 52)]
+	# Cada placa lleva el avatar del jugador: a la izquierda en la tuya y la de tu
+	# compañero; arriba, centrado, en las estrechas de los rivales.
+	plate_rect = [Rect2(392, 900.0 + p, 166, 72), Rect2(572.0 + s, mid - 236.0, 142, 124),
+			Rect2(240, 120.0 - p, 240, 48), Rect2(6.0 - s, mid - 236.0, 142, 124)]
 	bubble_pos = [Vector2(360, 864.0 + p), Vector2(500.0 + s, mid), Vector2(360, 310.0 - p), Vector2(220.0 - s, mid)]
 	slate_pos = [Vector2(170, 922.0 + p), Vector2(444.0 + s, 164.0 - p)]
 
@@ -581,6 +599,8 @@ func _net_seats(ev: Dictionary) -> void:
 		else:
 			names[v] = "%s (CPU)" % seat.name if away else NAMES[v]
 		seat_looks[v] = seat.look if (human or away) and v != 0 else {}
+	if not avatars.is_empty():
+		_refresh_avatars()
 
 
 ## Procesa en orden lo que va mandando el servidor; cada evento espera a que
@@ -801,14 +821,8 @@ func _spawn_tiles() -> void:
 
 ## "Sopa": las fichas boca abajo se revuelven en el centro y luego se reparten.
 func _animate_deal() -> void:
-	var c := play_rect.get_center()
 	_spawn_tiles()
-	for r in 3:
-		_play("shuffle")
-		for t: Tile in tiles.values():
-			var pos := c + Vector2(rng.randf_range(-150, 150), rng.randf_range(-150, 150))
-			t.fly_to(pos, t.rotation + rng.randf_range(-2.0, 2.0), 0.75, 0.3)
-		await _wait(0.33)
+	await _shuffle_animation()
 	var idx := 0
 	for i in State.HAND_SIZE:
 		for q in 4:
@@ -824,6 +838,69 @@ func _animate_deal() -> void:
 				get_tree().create_timer(delay + 0.3).timeout.connect(_play.bind("tick", 1.0))
 			idx += 1
 	await _wait(idx * 0.05 + 0.55)
+
+
+## Revuelve las fichas boca abajo antes de repartir. Cada mano usa una forma
+## distinta de revolver, al azar y sin repetir la de la mano anterior.
+func _shuffle_animation() -> void:
+	await get_tree().process_frame
+	var pick := rng.randi_range(0, SHUFFLES.size() - 1)
+	if pick == _last_shuffle:
+		pick = (pick + 1) % SHUFFLES.size()
+	if force_shuffle >= 0:
+		pick = force_shuffle % SHUFFLES.size()
+	_last_shuffle = pick
+	var order: Array = tiles.values()
+	State.shuffle(order, rng)
+	var c := play_rect.get_center()
+	var n := order.size()
+	# Remolino y ola van ficha a ficha; el resto, todas a la vez.
+	var stagger := 0.008 if SHUFFLES[pick] in ["remolino", "ola"] else 0.0
+	for step in 3:
+		_play("shuffle", rng.randf_range(0.9, 1.1))
+		for i in n:
+			var t: Tile = order[i]
+			var target := _shuffle_target(SHUFFLES[pick], step, i, n, c, t)
+			t.fly_to(target[0], target[1], 0.75, 0.3, i * stagger)
+		await _wait(0.33 + stagger * n)
+
+
+## Posición y giro de la ficha i (de n) en el paso `step` (0..2) de un revuelto.
+func _shuffle_target(kind: String, step: int, i: int, n: int, c: Vector2, t: Tile) -> Array:
+	var jitter := Vector2(rng.randf_range(-6, 6), rng.randf_range(-6, 6))
+	match kind:
+		"remolino":
+			# Giran en anillos alrededor del centro, cada vez más cerrados.
+			var radius := (70.0 + (i % 3) * 45.0) * (1.0 - step * 0.2)
+			var angle := float(i) / n * TAU + step * 1.1
+			return [c + Vector2.from_angle(angle) * radius + jitter, angle + PI * 0.5]
+		"montones":
+			# Dos montones a los lados que se intercalan en uno solo y se abren.
+			if step == 0:
+				var side := -1.0 if i % 2 == 0 else 1.0
+				return [c + Vector2(side * 130.0, 60.0 - i * 2.5) + jitter, rng.randf_range(-0.08, 0.08)]
+			if step == 1:
+				return [c + Vector2(rng.randf_range(-14, 14), 60.0 - i * 4.5), rng.randf_range(-0.12, 0.12)]
+			return [c + Vector2(rng.randf_range(-110, 110), rng.randf_range(-110, 110)), rng.randf_range(-PI, PI)]
+		"ola":
+			# En filas y columnas, con una ola que las recorre.
+			var col := i % 7
+			var row := i / 7
+			var base := c + Vector2((col - 3) * 50.0, (row - 1.5) * 92.0)
+			var wave := sin(col * 0.9 + step * 1.7)
+			if step == 2:
+				return [c + Vector2(rng.randf_range(-140, 140), rng.randf_range(-140, 140)), rng.randf_range(-PI, PI)]
+			return [base + Vector2(0, wave * 30.0), wave * 0.35]
+		"explosion":
+			# Se juntan en el centro, salen disparadas en círculo y caen revueltas.
+			if step == 0:
+				return [c + jitter * 1.5, rng.randf_range(-PI, PI)]
+			if step == 1:
+				var angle := float(i) / n * TAU
+				return [c + Vector2.from_angle(angle) * 185.0, angle]
+			return [c + Vector2(rng.randf_range(-150, 150), rng.randf_range(-150, 150)), rng.randf_range(-PI, PI)]
+	# "sopa": las manos las mueven sin orden por el centro de la mesa.
+	return [c + Vector2(rng.randf_range(-150, 150), rng.randf_range(-150, 150)), t.rotation + rng.randf_range(-2.0, 2.0)]
 
 
 func _layout_hand(p: int, dur: float) -> void:
@@ -1086,8 +1163,8 @@ func _build_hud() -> void:
 	hud.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	layer.add_child(hud)
 
-	var sp := _panel(hud, Rect2(172.0 - Table.side, 177.0 - pad, 262, 42), Color(0.08, 0.05, 0.03, 0.85), Color(0.85, 0.65, 0.3, 0.9))
-	info_lbl = _label(sp, "", 16, Color(0.9, 0.83, 0.67), Rect2(0, 0, 262, 42))
+	var sp := _panel(hud, Rect2(172.0 - Table.side, 170.0 - pad, 262, 76), UI.SURFACE_SOFT, UI.BORDER)
+	info_lbl = _label(sp, "", 22, Color(0.9, 0.83, 0.67), Rect2(0, 0, 262, 76))
 
 	for team in 2:
 		var board: ChalkBoard = ChalkBoard.new()
@@ -1102,10 +1179,40 @@ func _build_hud() -> void:
 		var plate := _panel(hud, plate_rect[p], Color(0.08, 0.05, 0.03, 0.8), TEAM_COLORS[p % 2])
 		plate.pivot_offset = plate.size * 0.5
 		plates.append(plate)
-		plate_labels.append(_label(plate, names[p], 16, CREAM, Rect2(Vector2.ZERO, plate.size)))
+		var av: Avatar = Avatar.new()
+		var text_rect := Rect2(Vector2.ZERO, plate.size)
+		match p:
+			0:
+				av.position = Vector2(6, 6)
+				av.size = Vector2(60, 60)
+				text_rect = Rect2(66, 0, plate.size.x - 66, plate.size.y)
+			2:
+				av.position = Vector2(4, 4)
+				av.size = Vector2(40, 40)
+				av.ring_width = 3.0
+				text_rect = Rect2(44, 0, plate.size.x - 44, plate.size.y)
+			_:
+				av.position = Vector2((plate.size.x - 56) * 0.5, 6)
+				av.size = Vector2(56, 56)
+				text_rect = Rect2(0, 62, plate.size.x, plate.size.y - 64)
+		plate.add_child(av)
+		avatars.append(av)
+		plate_labels.append(_label(plate, names[p], 22, CREAM, text_rect))
+	_refresh_avatars()
 
-	var menu_btn := _button(hud, "Menú", Color(0.45, 0.33, 0.22), Rect2(58.0 - Table.side, 172.0 - pad, 104, 52), 20)
+	var menu_btn := _button(hud, "Menú", Color(0.45, 0.33, 0.22), Rect2(40.0 - Table.side, 164.0 - pad, 120, UI.TOUCH), 28)
 	menu_btn.pressed.connect(_show_options)
+	if net != null:
+		# Encima de la placa del rival de la derecha, donde no tapa la mesa.
+		var mid := play_rect.get_center().y
+		_chat_btn = _button(hud, "Chat", UI.ACCENT, Rect2(604.0 + Table.side, mid - 344.0, 108, 76), 28)
+		_chat_btn.pressed.connect(_open_chat)
+		# Debajo, la señal de la conexión.
+		var meter: SignalMeter = SignalMeter.new()
+		meter.net = net
+		meter.position = Vector2(608.0 + Table.side, mid - 264.0)
+		meter.size = Vector2(104, 24)
+		hud.add_child(meter)
 
 
 	banner = _label(hud, "", 46, GOLD, Rect2(20, 520, 680, 170))
@@ -1147,11 +1254,60 @@ func _build_hud() -> void:
 	confetti.color_initial_ramp = ramp
 	hud.add_child(confetti)
 
-	end_panel = _panel(hud, Rect2(50, 400, 620, 420), Color(0.13, 0.08, 0.05, 0.97), GOLD)
+	end_panel = _panel(hud, Rect2(40, 360, 640, 500), UI.SURFACE, GOLD)
 	end_panel.mouse_filter = Control.MOUSE_FILTER_STOP
 	end_panel.pivot_offset = end_panel.size * 0.5
 	_build_options()
 	end_panel.visible = false
+	if net != null:
+		_chat = Chat.new()
+		_chat.net = net
+		_chat.sfx = sfx
+		_chat.top = Table.pad
+		hud.add_child(_chat)
+		net.chat_message.connect(_on_chat)
+		net.mute_changed.connect(_refresh_avatars)
+
+
+func _open_chat() -> void:
+	_unread = 0
+	_chat_btn.text = "Chat"
+	_chat.open()
+
+
+## Mensaje del chat: un bocadillo (o un emoji grande) junto a quien lo mandó,
+## y la cuenta de no leídos en el botón si el chat está cerrado.
+func _on_chat(msg: Dictionary) -> void:
+	var v := posmod(int(msg.seat) - my_seat, 4)
+	if int(msg.kind) == Chat.EMOJI:
+		var tex := Chat.emoji(str(msg.text))
+		if tex != null:
+			_emoji_pop(v, tex)
+	else:
+		_bubble(v, str(msg.text), 2.6)
+	if not _chat.visible and v != 0:
+		_unread += 1
+		_chat_btn.text = "Chat %d" % mini(_unread, 9)
+		_play("click", 1.5)
+
+
+func _emoji_pop(p: int, tex: Texture2D) -> void:
+	var img := TextureRect.new()
+	img.texture = tex
+	img.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	img.size = Vector2(110, 110)
+	img.position = bubble_pos[p] - img.size * 0.5
+	img.pivot_offset = img.size * 0.5
+	img.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	img.scale = Vector2(0.2, 0.2)
+	hud.add_child(img)
+	var tw := img.create_tween()
+	tw.tween_property(img, "scale", Vector2.ONE, 0.3).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.tween_interval(1.0)
+	tw.set_parallel(true)
+	tw.tween_property(img, "position:y", img.position.y - 60.0, 0.5)
+	tw.tween_property(img, "modulate:a", 0.0, 0.5)
+	tw.chain().tween_callback(img.queue_free)
 
 
 func _panel(parent: Node, rect: Rect2, bg: Color, border: Color) -> Panel:
@@ -1197,7 +1353,8 @@ func _button(parent: Node, text: String, color: Color, rect: Rect2, font_size: i
 
 
 func _refresh_score(animate: bool) -> void:
-	info_lbl.text = "Mano %d  ·  Meta %d  ·  %s" % [hand_no, TARGET_SCORE, DIFF_NAMES[difficulty]]
+	info_lbl.text = "Mano %d  ·  a %d puntos
+CPU: %s" % [hand_no, TARGET_SCORE, DIFF_NAMES[difficulty]]
 	for team in 2:
 		var board: ChalkBoard = boards[team]
 		if animate and scores[team] != board.shown:
@@ -1207,12 +1364,33 @@ func _refresh_score(animate: bool) -> void:
 
 func _refresh_plates() -> void:
 	for p in 4:
-		# Las placas de los rivales son estrechas: nombre arriba, fichas debajo.
+		# Solo la de tu compañero es de una línea; en las demás, nombre arriba
+		# y fichas debajo.
 		var count: int = hand_tiles[p].size()
 		var fmt := "%s  ·  %d"
-		if p % 2 == 1:
+		if p != 2:
 			fmt = "%s\n%d ficha" if count == 1 else "%s\n%d fichas"
 		plate_labels[p].text = fmt % [names[p], count]
+
+
+## Foto o icono de cada jugador: el mío de los ajustes, el de otra persona
+## según lo que eligió, y uno fijo para cada CPU.
+func _refresh_avatars() -> void:
+	for p in 4:
+		var av: Avatar = avatars[p]
+		av.ring = TEAM_COLORS[p % 2].lightened(0.25)
+		if p == 0:
+			Settings.apply_avatar(av)
+		elif not seat_looks[p].is_empty():
+			var look: Dictionary = seat_looks[p]
+			if net != null and net.muted.has(names[p]):
+				# Silenciado: tampoco se ve su foto, solo su icono.
+				look = look.duplicate()
+				look.erase("photo")
+			av.show_look(look, names[p])
+		else:
+			av.photo = null
+			av.icon = CPU_AVATARS[p]
 
 
 func _set_active(p: int) -> void:
@@ -1222,6 +1400,8 @@ func _set_active(p: int) -> void:
 		var plate: Panel = plates[i]
 		plate.scale = Vector2.ONE
 		plate.modulate = Color(1.5, 1.4, 1.0) if i == p else Color(1, 1, 1, 0.7)
+		# El aro dorado marca a quién le toca.
+		avatars[i].ring = GOLD if i == p else TEAM_COLORS[i % 2].lightened(0.25)
 	if p < 0:
 		return
 	_plate_tw = create_tween().set_loops()
@@ -1243,16 +1423,20 @@ func _show_banner(text: String, color: Color) -> void:
 	_banner_tw.tween_property(banner, "modulate:a", 0.0, 0.3)
 
 
-func _bubble(p: int, text: String) -> void:
-	var size := Vector2(maxf(120.0, text.length() * 13.0 + 30.0), 44)
+func _bubble(p: int, text: String, hold: float = 0.7) -> void:
+	# Un mensaje largo del chat ocupa dos líneas en vez de salirse.
+	var wide := text.length() * 15.0 + 44.0
+	var size := Vector2(minf(maxf(150.0, wide), 520.0), 58.0 if wide <= 520.0 else 96.0)
 	var center: Vector2 = bubble_pos[p]
+	center.x = clampf(center.x, size.x * 0.5 + 10.0 - Table.side, 710.0 + Table.side - size.x * 0.5)
 	var pn := _panel(hud, Rect2(center - size * 0.5, size), Color(0.98, 0.96, 0.9), TEAM_COLORS[p % 2])
-	_label(pn, text, 20, Color(0.15, 0.1, 0.06), Rect2(Vector2.ZERO, size))
+	var lb := _label(pn, text, UI.CAPTION, Color(0.15, 0.1, 0.06), Rect2(10, 0, size.x - 20, size.y))
+	lb.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	pn.pivot_offset = size * 0.5
 	pn.scale = Vector2(0.2, 0.2)
 	var tw := pn.create_tween()
 	tw.tween_property(pn, "scale", Vector2.ONE, 0.25).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
-	tw.tween_interval(0.7)
+	tw.tween_interval(hold)
 	tw.tween_property(pn, "modulate:a", 0.0, 0.25)
 	tw.tween_callback(pn.queue_free)
 
@@ -1266,14 +1450,14 @@ func _show_end(title: String, color: Color, lines: Array, buttons: Array) -> voi
 	tl.add_theme_constant_override("outline_size", 8)
 	var y := 90.0
 	for ln in lines:
-		_label(end_panel, ln, 20, CREAM, Rect2(20, y, w - 40, 28))
-		y += 30.0
-	var bw := 230.0
+		_label(end_panel, ln, UI.CAPTION, CREAM, Rect2(20, y, w - 40, 34))
+		y += 36.0
+	var bw := 270.0
 	var total := buttons.size() * bw + (buttons.size() - 1) * 24.0
 	var x := (w - total) * 0.5
 	for spec in buttons:
 		var action: String = spec[1]
-		var b := _button(end_panel, spec[0], spec[2], Rect2(x, 340, bw, 56), 24)
+		var b := _button(end_panel, spec[0], spec[2], Rect2(x, 384, bw, UI.TOUCH), 28)
 		b.pressed.connect(func() -> void: _panel_done.emit(action))
 		x += bw + 24.0
 	overlay.visible = true
@@ -1302,15 +1486,15 @@ func _build_options() -> void:
 	_label(opt_panel, "Ajustes", 40, GOLD, Rect2(0, 18, 600, 56))
 	var y := 96.0
 	for key: String in SOUND_OPTIONS.keys():
-		var b := _button(opt_panel, "", Color.GRAY, Rect2(50, y, 500, 76), 26)
+		var b := _button(opt_panel, "", Color.GRAY, Rect2(50, y, 500, UI.TOUCH_SMALL), 30)
 		b.pressed.connect(_toggle_sound.bind(key))
 		_sound_btns[key] = b
-		y += 92.0
-	_hands_btn = _button(opt_panel, "", Color.GRAY, Rect2(50, y, 500, 76), 26)
+		y += 96.0
+	_hands_btn = _button(opt_panel, "", Color.GRAY, Rect2(50, y, 500, UI.TOUCH_SMALL), 30)
 	_hands_btn.pressed.connect(_toggle_hands)
-	var resume := _button(opt_panel, "Seguir jugando", Color(0.25, 0.6, 0.3), Rect2(50, 488, 500, 84), 30)
+	var resume := _button(opt_panel, "Seguir jugando", Color(0.25, 0.6, 0.3), Rect2(50, 492, 500, UI.TOUCH), UI.BUTTON)
 	resume.pressed.connect(_hide_options)
-	var leave := _button(opt_panel, "Salir al menú", Color(0.7, 0.2, 0.18), Rect2(125, 598, 350, 70), 26)
+	var leave := _button(opt_panel, "Salir al menú", Color(0.7, 0.2, 0.18), Rect2(125, 600, 350, UI.TOUCH_SMALL), 30)
 	leave.pressed.connect(func() -> void: exit_to_menu.emit())
 	_refresh_options()
 
@@ -1333,12 +1517,12 @@ func _toggle_hands() -> void:
 	_apply_show_hands()
 
 
-## Muestra u oculta las manos que sujetan las fichas (las mías y las de los
-## demás) según la preferencia del jugador. Las fichas no se mueven.
+## Manos que sujetan las fichas o, si el jugador las ocultó, un atril de madera
+## (las mías y las de los demás). Las fichas no se mueven.
 func _apply_show_hands() -> void:
 	var on: bool = Settings.data.show_hands != 0
 	for h: Hand in hands_gfx:
-		h.visible = on
+		h.rack = not on
 	for g: Glass in glasses:
 		g.show_grip = on
 

@@ -45,7 +45,59 @@ static func cup_centers() -> Array:
 	return [r.position, Vector2(r.end.x, r.position.y), Vector2(r.position.x, bottom), Vector2(r.end.x, bottom)]
 
 
+## Con `cached` (lo normal) la mesa se pinta una sola vez en una imagen y lo que
+## se muestra es esa imagen. Pintarla directamente cuesta miles de llamadas de
+## dibujo por fotograma (veta, nudos, juntas...), demasiado para un teléfono
+## modesto, y la mesa nunca se mueve.
+var cached := true
+## Margen alrededor de la mesa que entra en la imagen (para la sombra).
+const CACHE_MARGIN := 40.0
+
+var _viewport: SubViewport
+var _painter: Node2D
+
+
+func _ready() -> void:
+	if cached:
+		_build_cache()
+
+
+## Vuelve a pintar la mesa (al cambiar de acabado en Personalizar).
+func refresh() -> void:
+	if _painter != null:
+		_painter.queue_redraw()
+		_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+	else:
+		queue_redraw()
+
+
+func _build_cache() -> void:
+	var region := outer().grow(CACHE_MARGIN)
+	# La imagen se pinta a la resolución real de la pantalla, para que no se vea borrosa.
+	var k := clampf(get_viewport().get_final_transform().get_scale().x * global_scale.x, 0.1, 3.0)
+	_viewport = SubViewport.new()
+	_viewport.size = Vector2i((region.size * k).ceil())
+	_viewport.disable_3d = true
+	_viewport.render_target_update_mode = SubViewport.UPDATE_ONCE
+	# El pintor es otra mesa igual, pero que dibuja de verdad.
+	_painter = (get_script() as GDScript).new()
+	_painter.cached = false
+	_painter.position = -region.position * k
+	_painter.scale = Vector2(k, k)
+	_viewport.add_child(_painter)
+	add_child(_viewport)
+	var sprite := Sprite2D.new()
+	sprite.centered = false
+	sprite.texture = _viewport.get_texture()
+	sprite.position = region.position
+	sprite.scale = Vector2.ONE / k
+	add_child(sprite)
+
+
 func _draw() -> void:
+	if cached:
+		# Lo que se ve es la imagen; fuera de ella, el color de fondo de la ventana.
+		return
 	var st := style()
 	var rim: Color = st.rim
 	var rng := RandomNumberGenerator.new()
