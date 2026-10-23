@@ -14,6 +14,8 @@ config/name="Crazy Dominoes"
 run/main_scene="res://scenes/main.tscn"
 config/quit_on_go_back=false
 config/features=PackedStringArray("4.7", "GL Compatibility")
+run/low_processor_mode=true
+run/max_fps=60
 
 [display]
 

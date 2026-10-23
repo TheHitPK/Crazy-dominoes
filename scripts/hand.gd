@@ -35,6 +35,19 @@ var two := 1.0:
 	set(v):
 		two = v
 		refresh()
+## Sin manos (preferencia del jugador): las fichas se paran en un atril de
+## madera, el posa dominós. Su tabla de atrás va detrás de las fichas y el
+## reborde de delante pisa solo su canto inferior, como el pulgar.
+var rack := false:
+	set(v):
+		rack = v
+		refresh()
+## Largo que ocupan las fichas; el atril crece y se encoge con él.
+var span := 0.0:
+	set(v):
+		span = v
+		refresh()
+const RACK_WOOD := Color(0.45, 0.26, 0.13)
 
 var _front: Node2D
 var _tw: Tween
@@ -65,6 +78,7 @@ func set_count(n: int) -> void:
 	_tw = create_tween().set_parallel(true).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
 	_tw.tween_property(self, "spread", step() * n * 0.27 if n >= 4 else 0.0, 0.35)
 	_tw.tween_property(self, "two", 1.0 if n >= 4 else 0.0, 0.35)
+	_tw.tween_property(self, "span", step() * n - gap if n > 0 else 0.0, 0.35)
 	_tw.tween_property(self, "modulate:a", 1.0 if n > 0 else 0.0, 0.35)
 
 
@@ -180,6 +194,9 @@ func _nail(c: CanvasItem, tip: Vector2, dir: Vector2, w: float, al: float, thumb
 # -------------------------------------------------------- detrás de las fichas
 
 func _draw() -> void:
+	if rack:
+		_draw_rack_back()
+		return
 	var u := TILE_W * k
 	var e := _edge()
 	for h in _hands():
@@ -288,6 +305,9 @@ func _draw_sleeve(hx: float, u: float, al: float) -> void:
 # ------------------------------------------------------- delante de las fichas
 
 func _draw_front() -> void:
+	if rack:
+		_draw_rack_front()
+		return
 	var u := TILE_W * k
 	var e := _edge()
 	for h in _hands():
@@ -316,3 +336,58 @@ func _draw_front() -> void:
 				Color(_light(), 0.7 * al), maxf(1.0, 0.07 * u), true)
 		_front.draw_line(knuckle - n * 0.12 * u, knuckle + n * 0.12 * u, Color(_shade(), 0.8 * al), e, true)
 		_nail(_front, tip, dir, 0.34 * u, al, true)
+
+
+# ------------------------------------------------------------------- atril
+
+## Franja del atril de y0 a y1 (en u) con los extremos redondeados. Sigue la
+## misma curva que el abanico de fichas (ver slot).
+func _rack_strip(c: CanvasItem, half: float, y0: float, y1: float, col: Color) -> void:
+	var u := TILE_W * k
+	var pts := PackedVector2Array()
+	var steps := 12
+	for i in steps + 1:
+		var x := lerpf(-half, half, float(i) / steps)
+		pts.append(Vector2(x, x * x * arc + y0 * u))
+	for i in range(steps, -1, -1):
+		var x := lerpf(-half, half, float(i) / steps)
+		pts.append(Vector2(x, x * x * arc + y1 * u))
+	c.draw_colored_polygon(pts, col)
+	var r := (y1 - y0) * 0.5 * u
+	for x in [-half, half]:
+		c.draw_circle(Vector2(x, x * x * arc + (y0 + y1) * 0.5 * u), r, col, true, -1.0, true)
+
+
+## Línea a lo largo del atril (vetas, filo, filete del color del equipo).
+func _rack_line(c: CanvasItem, half: float, y: float, col: Color, width: float) -> void:
+	var u := TILE_W * k
+	var pts := PackedVector2Array()
+	for i in 13:
+		var x := lerpf(-half, half, i / 12.0)
+		pts.append(Vector2(x, x * x * arc + y * u))
+	c.draw_polyline(pts, col, width, true)
+
+
+## Tabla de atrás, en la que se apoyan las fichas: asoma por los extremos y
+## entre ficha y ficha.
+func _draw_rack_back() -> void:
+	var u := TILE_W * k
+	var half := span * 0.5 + 0.14 * u
+	_rack_strip(self, half + 0.04 * u, -0.66, 1.0, RACK_WOOD.darkened(0.55))
+	_rack_strip(self, half, -0.62, 0.96, RACK_WOOD.darkened(0.25))
+	_rack_line(self, half - 0.2 * u, -0.5, Color(RACK_WOOD.lightened(0.25), 0.6), maxf(1.0, 0.04 * u))
+
+
+## Reborde de delante, con su sombra sobre la mesa, el canto iluminado arriba,
+## un par de vetas y un filete del color del equipo.
+func _draw_rack_front() -> void:
+	var u := TILE_W * k
+	var half := span * 0.5 + 0.3 * u
+	var e := _edge()
+	_rack_strip(_front, half, 1.02, 1.5, Color(0, 0, 0, 0.3))
+	_rack_strip(_front, half + e, 0.9 - e / u, 1.4 + e / u, RACK_WOOD.darkened(0.5))
+	_rack_strip(_front, half, 0.9, 1.4, RACK_WOOD)
+	_rack_strip(_front, half - 0.02 * u, 0.91, 1.02, RACK_WOOD.lightened(0.3))
+	for y in [1.12, 1.2]:
+		_rack_line(_front, half - 0.25 * u, y, Color(RACK_WOOD.darkened(0.3), 0.5), maxf(1.0, 0.025 * u))
+	_rack_line(_front, half - 0.12 * u, 1.3, Color(sleeve.lightened(0.15), 0.9), maxf(1.0, 0.05 * u))

@@ -49,6 +49,22 @@ var dim: float = 0.0:
 		dim = v
 		queue_redraw()
 
+## Rendimiento: cada cara (y el dorso) se pinta una sola vez en una imagen
+## pequeña y las fichas muestran esa imagen. Dibujarlas punto a punto en cada
+## fotograma eran cientos de llamadas de dibujo, demasiadas para un teléfono
+## modesto. Clave -> {"tex": ViewportTexture, "ready": bool}.
+static var _baked := {}
+static var _baked_style := -1
+static var _bake_holder: Node
+## Fichas que se dibujaron "a mano" mientras su imagen se preparaba.
+static var _waiting: Array = []
+## Píxeles por unidad de las imágenes: nítidas incluso en tu mano, que es la ficha más grande.
+const BAKE_SCALE := 2.6
+## Margen alrededor de la ficha dentro de la imagen, para que quepa la sombra.
+const BAKE_MARGIN := 7.0
+## true en las fichas que solo sirven para pintar esas imágenes.
+var painter := false
+
 var _style := 0
 var _tw: Tween
 var _flip_tw: Tween
@@ -151,7 +167,9 @@ func _nearest(rot: float) -> float:
 
 
 func _draw() -> void:
-	var st: Dictionary = STYLES[_style]
+	if painter:
+		_draw_face(flip >= 0.5)
+		return
 	var sx := maxf(absf(cos(flip * PI)), 0.03)
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2(sx, 1.0))
 	var rect := Rect2(-W * 0.5, -H * 0.5, W, H)
@@ -160,7 +178,91 @@ func _draw() -> void:
 		_halo.border_color = Color(1.0, 0.82, 0.2, glow)
 		_halo.shadow_color = Color(1.0, 0.72, 0.1, 0.55 * glow)
 		_halo.draw(ci, rect.grow(3.0))
-	if flip >= 0.5:
+	var face_up := flip >= 0.5
+	var entry: Dictionary = _baked.get(_face_key(face_up), {})
+	if entry.get("ready", false):
+		# La imagen se pinta con los valores de menor a mayor (arriba, abajo):
+		# si esta ficha los lleva al revés, se gira media vuelta.
+		var turned := face_up and top > bottom
+		draw_set_transform(Vector2.ZERO, PI if turned else 0.0, Vector2(sx, 1.0))
+		draw_texture_rect(entry.tex, rect.grow(BAKE_MARGIN), false)
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2(sx, 1.0))
+	else:
+		_bake.call_deferred(face_up)
+		if not _waiting.has(self):
+			_waiting.append(self)
+		_draw_face(face_up)
+	if dim > 0.01:
+		# Sobre el ébano un velo negro no se nota: se usa gris.
+		_shade.bg_color = Color(0.5, 0.5, 0.5, 0.5 * dim) if _style == EBONY else Color(0, 0, 0, 0.42 * dim)
+		_shade.draw(ci, rect)
+
+
+## Clave de la imagen de una cara: material, valores y ficha (la textura de
+## madera o piedra cambia de una ficha a otra). El dorso solo depende del material.
+func _face_key(face_up: bool) -> String:
+	if not face_up or code < 0:
+		return "b%d" % _style
+	return "f%d_%d_%d_%d" % [_style, mini(top, bottom), maxi(top, bottom), code]
+
+
+## Prepara la imagen de esta cara si aún no existe.
+func _bake(face_up: bool) -> void:
+	if _style != _baked_style:
+		# Cambió el material: las imágenes de antes ya no sirven.
+		_clear_baked()
+		_baked_style = _style
+	var key := _face_key(face_up)
+	if _baked.has(key):
+		return
+	var tree := Engine.get_main_loop() as SceneTree
+	if _bake_holder == null or not is_instance_valid(_bake_holder):
+		_bake_holder = Node.new()
+		_bake_holder.name = "TileFaces"
+		tree.root.add_child(_bake_holder)
+	var vp := SubViewport.new()
+	vp.transparent_bg = true
+	vp.disable_3d = true
+	vp.size = Vector2i(((Vector2(W, H) + Vector2.ONE * BAKE_MARGIN * 2.0) * BAKE_SCALE).ceil())
+	vp.render_target_update_mode = SubViewport.UPDATE_ONCE
+	var p: Node2D = (get_script() as GDScript).new()
+	p.painter = true
+	p.code = code
+	p.set_values(mini(top, bottom), maxi(top, bottom))
+	p.flip = 1.0 if face_up else 0.0
+	p.position = Vector2(vp.size) * 0.5
+	p.scale = Vector2.ONE * BAKE_SCALE
+	vp.add_child(p)
+	_bake_holder.add_child(vp)
+	_baked[key] = {"tex": vp.get_texture(), "ready": false, "viewport": vp}
+	# Un par de fotogramas después ya está pintada: las fichas que esperaban la usan.
+	tree.create_timer(0.08, true, false, true).timeout.connect(_baked_ready.bind(key))
+
+
+static func _baked_ready(key: String) -> void:
+	if not _baked.has(key):
+		return
+	_baked[key].ready = true
+	for t in _waiting:
+		if is_instance_valid(t):
+			t.queue_redraw()
+	_waiting.clear()
+
+
+static func _clear_baked() -> void:
+	for entry: Dictionary in _baked.values():
+		if is_instance_valid(entry.viewport):
+			entry.viewport.queue_free()
+	_baked.clear()
+
+
+## La cara de verdad, punto a punto. La usan los pintores de imágenes, y una
+## ficha normal solo mientras su imagen aún no está lista.
+func _draw_face(face_up: bool) -> void:
+	var st: Dictionary = STYLES[_style]
+	var rect := Rect2(-W * 0.5, -H * 0.5, W, H)
+	var ci := get_canvas_item()
+	if face_up:
 		_body.draw(ci, rect)
 		_draw_material(st)
 		draw_line(Vector2(-W * 0.5 + 5.0, 0), Vector2(W * 0.5 - 5.0, 0), st.line, 1.5, true)
@@ -174,10 +276,6 @@ func _draw() -> void:
 		draw_polyline(PackedVector2Array([Vector2(0, -24), Vector2(11, 0), Vector2(0, 24),
 				Vector2(-11, 0), Vector2(0, -24)]), motif, 1.5, true)
 		draw_circle(Vector2.ZERO, 3.0, motif, true, -1.0, true)
-	if dim > 0.01:
-		# Sobre el ébano un velo negro no se nota: se usa gris.
-		_shade.bg_color = Color(0.5, 0.5, 0.5, 0.5 * dim) if _style == EBONY else Color(0, 0, 0, 0.42 * dim)
-		_shade.draw(ci, rect)
 
 
 ## Textura propia de cada material, distinta en cada ficha.

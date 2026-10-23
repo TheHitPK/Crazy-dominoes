@@ -1,0 +1,3 @@
+Emojis: Twemoji 14.0.2 (https://github.com/twitter/twemoji)
+Copyright 2020 Twitter, Inc and other contributors.
+Gráficos con licencia CC-BY 4.0: https://creativecommons.org/licenses/by/4.0/
