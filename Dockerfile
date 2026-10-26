@@ -27,10 +27,14 @@ WORKDIR /app
 COPY project.godot ./
 COPY scenes ./scenes
 COPY scripts ./scripts
+# chat.gd (que usa net.gd) precarga los emoji: sin ellos el servidor no compila.
+COPY emoji ./emoji
 
-# No se ejecuta como root.
+# No se ejecuta como root. Los emoji se importan aquí una vez: sin la caché
+# .godot/ el proyecto no puede cargarlos.
 RUN useradd --create-home dominoes && chown -R dominoes /app
 USER dominoes
+RUN godot --headless --path /app --import
 
 # Render indica el puerto en la variable PORT; 10000 es su valor por defecto.
 ENV PORT=10000
