@@ -6,8 +6,9 @@ const Settings = preload("res://scripts/settings.gd")
 
 const W := 40.0
 const H := 80.0
-enum { IVORY, WOOD, CERAMIC, EBONY, COLORS, STONE }
-## Paleta de cada material: cuerpo, borde, puntos, divisor, dorso y dibujo del dorso.
+enum { IVORY, WOOD, CERAMIC, EBONY, COLORS, STONE, MARBLE, CARIBE, RUBY, GOLD, NEON, CATATUMBO }
+## Paleta de cada material: cuerpo, borde, puntos, divisor, dorso y dibujo del
+## dorso. "dark": cuerpo oscuro (el velo de ficha no jugable va en gris).
 const STYLES := [
 	{"body": Color(0.97, 0.95, 0.88), "edge": Color(0.62, 0.57, 0.46), "pip": Color(0.09, 0.09, 0.11),
 		"line": Color(0.45, 0.42, 0.36), "back": Color(0.13, 0.2, 0.36), "motif": Color(0.86, 0.7, 0.32)},
@@ -21,10 +22,29 @@ const STYLES := [
 		"line": Color(0.45, 0.42, 0.36), "back": Color(0.5, 0.14, 0.2), "motif": Color(0.98, 0.85, 0.4)},
 	{"body": Color(0.63, 0.61, 0.56), "edge": Color(0.36, 0.34, 0.3), "pip": Color(0.14, 0.13, 0.12),
 		"line": Color(0.33, 0.31, 0.28), "back": Color(0.3, 0.3, 0.33), "motif": Color(0.62, 0.6, 0.55)},
+	# Mármol: blanco con vetas grises.
+	{"body": Color(0.95, 0.95, 0.94), "edge": Color(0.62, 0.62, 0.64), "pip": Color(0.18, 0.2, 0.26),
+		"line": Color(0.55, 0.56, 0.6), "back": Color(0.16, 0.3, 0.26), "motif": Color(0.9, 0.9, 0.88)},
+	# Caribe: turquesa con dorso coral.
+	{"body": Color(0.6, 0.88, 0.86), "edge": Color(0.2, 0.55, 0.58), "pip": Color(0.05, 0.2, 0.35),
+		"line": Color(0.2, 0.5, 0.55), "back": Color(0.95, 0.45, 0.38), "motif": Color(1, 0.9, 0.75)},
+	# Rubí: rojo con brillo y puntos dorados.
+	{"body": Color(0.62, 0.07, 0.12), "edge": Color(0.32, 0.02, 0.05), "pip": Color(1.0, 0.84, 0.45),
+		"line": Color(0.95, 0.7, 0.35), "back": Color(0.3, 0.03, 0.06), "motif": Color(1.0, 0.8, 0.4), "dark": true},
+	# Oro: metal dorado con reflejos.
+	{"body": Color(0.93, 0.75, 0.3), "edge": Color(0.58, 0.42, 0.1), "pip": Color(0.26, 0.15, 0.03),
+		"line": Color(0.6, 0.43, 0.12), "back": Color(0.08, 0.07, 0.06), "motif": Color(0.95, 0.78, 0.32)},
+	# Neón: negro con puntos que brillan.
+	{"body": Color(0.07, 0.07, 0.12), "edge": Color(0.1, 0.75, 0.85), "pip": Color(0.25, 1.0, 0.95),
+		"line": Color(1.0, 0.25, 0.75), "back": Color(0.1, 0.04, 0.16), "motif": Color(1.0, 0.3, 0.8), "dark": true},
+	# Catatumbo: noche violeta con estrellas, puntos de rayo y un rayo en el dorso.
+	{"body": Color(0.24, 0.13, 0.4), "edge": Color(0.12, 0.06, 0.22), "pip": Color(1.0, 0.86, 0.35),
+		"line": Color(0.75, 0.6, 1.0), "back": Color(0.06, 0.05, 0.16), "motif": Color(1.0, 0.86, 0.35), "dark": true},
 ]
 ## Color de los puntos según el número, para el estilo "Puntos de colores".
 const PIP_COLORS := [Color.BLACK, Color(0.1, 0.4, 0.85), Color(0.12, 0.6, 0.25), Color(0.85, 0.15, 0.15),
-		Color(0.55, 0.2, 0.7), Color(0.92, 0.5, 0.08), Color(0.05, 0.6, 0.62)]
+		Color(0.55, 0.2, 0.7), Color(0.92, 0.5, 0.08), Color(0.05, 0.6, 0.62), Color(0.75, 0.1, 0.45),
+		Color(0.35, 0.3, 0.25), Color(0.1, 0.25, 0.55)]
 
 var code: int = 0
 var top: int = 0
@@ -62,8 +82,12 @@ static var _waiting: Array = []
 const BAKE_SCALE := 2.6
 ## Margen alrededor de la ficha dentro de la imagen, para que quepa la sombra.
 const BAKE_MARGIN := 7.0
-## true en las fichas que solo sirven para pintar esas imágenes.
+## true en las fichas que solo sirven para pintar esas imágenes (y en las
+## miniaturas de la tienda, que se dibujan directamente).
 var painter := false
+## Material de esta ficha si no es el elegido en los ajustes (miniaturas de la
+## tienda). Con -1, el de los ajustes.
+var style_index := -1
 
 var _style := 0
 var _tw: Tween
@@ -92,13 +116,13 @@ func _init() -> void:
 
 ## Vuelve a leer el material elegido en los ajustes.
 func refresh_style() -> void:
-	_style = clampi(Settings.data.tile_style, 0, STYLES.size() - 1)
+	_style = clampi(style_index if style_index >= 0 else int(Settings.data.tile_style), 0, STYLES.size() - 1)
 	var st: Dictionary = STYLES[_style]
 	_body.bg_color = st.body
 	_body.border_color = st.edge
 	_back.bg_color = st.back
 	_back.border_color = st.back.darkened(0.5)
-	var r := 4 if _style == STONE else 7
+	var r := 4 if _style == STONE or _style == MARBLE else 7
 	_body.set_corner_radius_all(r)
 	_back.set_corner_radius_all(r)
 	_shade.set_corner_radius_all(r)
@@ -193,8 +217,9 @@ func _draw() -> void:
 			_waiting.append(self)
 		_draw_face(face_up)
 	if dim > 0.01:
-		# Sobre el ébano un velo negro no se nota: se usa gris.
-		_shade.bg_color = Color(0.5, 0.5, 0.5, 0.5 * dim) if _style == EBONY else Color(0, 0, 0, 0.42 * dim)
+		# Sobre las fichas oscuras un velo negro no se nota: se usa gris.
+		var dark: bool = _style == EBONY or STYLES[_style].get("dark", false)
+		_shade.bg_color = Color(0.5, 0.5, 0.5, 0.5 * dim) if dark else Color(0, 0, 0, 0.42 * dim)
 		_shade.draw(ci, rect)
 
 
@@ -273,6 +298,16 @@ func _draw_face(face_up: bool) -> void:
 	else:
 		_back.draw(ci, rect)
 		var motif: Color = st.motif
+		if _style == CATATUMBO:
+			# El rayo del estudio.
+			var bolt := PackedVector2Array([Vector2(3, -26), Vector2(-9, 3), Vector2(-1, 3), Vector2(-5, 26),
+					Vector2(9, -5), Vector2(1, -5), Vector2(7, -26)])
+			draw_colored_polygon(bolt, Color(motif, 0.3))
+			draw_colored_polygon(bolt, motif)
+			return
+		if _style == NEON:
+			draw_polyline(PackedVector2Array([Vector2(0, -24), Vector2(11, 0), Vector2(0, 24),
+					Vector2(-11, 0), Vector2(0, -24)]), Color(motif, 0.3), 5.0, true)
 		draw_polyline(PackedVector2Array([Vector2(0, -24), Vector2(11, 0), Vector2(0, 24),
 				Vector2(-11, 0), Vector2(0, -24)]), motif, 1.5, true)
 		draw_circle(Vector2.ZERO, 3.0, motif, true, -1.0, true)
@@ -311,6 +346,48 @@ func _draw_material(st: Dictionary) -> void:
 			for i in 2:
 				var a := Vector2(rng.randf_range(-17, 17), rng.randf_range(-36, 36))
 				draw_line(a, a + Vector2(rng.randf_range(-12, 12), rng.randf_range(-10, 10)), Color(0, 0, 0, 0.14), 1.0, true)
+		MARBLE:
+			# Vetas grises que cruzan la ficha.
+			for i in 3:
+				var pts := PackedVector2Array()
+				var p := Vector2(rng.randf_range(-18, 18), -38)
+				for q in 7:
+					pts.append(p)
+					p += Vector2(rng.randf_range(-7, 7), 12.5)
+				draw_polyline(pts, Color(0.45, 0.46, 0.5, rng.randf_range(0.2, 0.4)), rng.randf_range(0.6, 1.4), true)
+		CARIBE:
+			# Olas suaves.
+			for y in [-30.0, 30.0]:
+				var pts := PackedVector2Array()
+				for q in 9:
+					var x := -16.0 + q * 4.0
+					pts.append(Vector2(x, y + sin(q * 1.3 + code) * 1.6))
+				draw_polyline(pts, Color(1, 1, 1, 0.35), 1.2, true)
+		RUBY:
+			draw_colored_polygon(PackedVector2Array([Vector2(-17, -36), Vector2(-5, -36),
+					Vector2(-17, -12)]), Color(1, 0.75, 0.75, 0.3))
+			draw_line(Vector2(13, 12), Vector2(16, 34), Color(1, 0.7, 0.7, 0.22), 2.0, true)
+		GOLD:
+			# Reflejos del metal: dos franjas en diagonal.
+			draw_colored_polygon(PackedVector2Array([Vector2(-18, -14), Vector2(-18, -26), Vector2(18, 6),
+					Vector2(18, 18)]), Color(1, 0.97, 0.8, 0.35))
+			draw_colored_polygon(PackedVector2Array([Vector2(-18, 22), Vector2(-18, 16), Vector2(18, 38),
+					Vector2(18, 40)]), Color(1, 0.97, 0.8, 0.25))
+			draw_colored_polygon(PackedVector2Array([Vector2(-18, 0), Vector2(-18, -6), Vector2(18, 24),
+					Vector2(18, 30)]), Color(0.55, 0.38, 0.05, 0.18))
+		NEON:
+			var glow := StyleBoxFlat.new()
+			glow.draw_center = false
+			glow.border_color = Color(st.edge, 0.55)
+			glow.set_border_width_all(1)
+			glow.set_corner_radius_all(5)
+			glow.draw(get_canvas_item(), Rect2(-W * 0.5 + 3.0, -H * 0.5 + 3.0, W - 6.0, H - 6.0))
+		CATATUMBO:
+			# Cielo de noche: más claro abajo y estrellas.
+			draw_rect(Rect2(-W * 0.5 + 2.0, 6.0, W - 4.0, H * 0.5 - 9.0), Color(0.55, 0.3, 0.75, 0.25))
+			for i in 9:
+				var p := Vector2(rng.randf_range(-16, 16), rng.randf_range(-36, 36))
+				draw_circle(p, rng.randf_range(0.4, 0.9), Color(1, 1, 1, rng.randf_range(0.4, 0.8)))
 
 
 func _draw_pips(n: int, cy: float, st: Dictionary) -> void:
@@ -324,14 +401,23 @@ func _draw_pips(n: int, cy: float, st: Dictionary) -> void:
 	if n >= 4:
 		pts.append(Vector2(g, -g))
 		pts.append(Vector2(-g, g))
-	if n == 6:
+	if n >= 6:
 		pts.append(Vector2(-g, 0))
 		pts.append(Vector2(g, 0))
+	if n >= 8:
+		# Doble nueve: rejilla de 3x3 (el 8 sin el centro, que ya pone el impar).
+		pts.append(Vector2(0, -g))
+		pts.append(Vector2(0, g))
 	var col: Color = PIP_COLORS[n] if _style == COLORS else st.pip
+	# Con 7 o más los puntos van más juntos: un poco más pequeños.
+	var r := 3.9 if n < 7 else 3.4
 	for p: Vector2 in pts:
 		var c := p + Vector2(0, cy)
 		if _style == STONE or _style == WOOD:
 			# Puntos tallados: un reborde más claro abajo.
-			draw_circle(c + Vector2(0.6, 0.9), 4.1, Color(1, 1, 1, 0.22), true, -1.0, true)
-		draw_circle(c, 3.9, col, true, -1.0, true)
+			draw_circle(c + Vector2(0.6, 0.9), r + 0.2, Color(1, 1, 1, 0.22), true, -1.0, true)
+		elif _style == NEON or _style == CATATUMBO:
+			# Puntos que brillan.
+			draw_circle(c, r + 2.6, Color(col, 0.25), true, -1.0, true)
+		draw_circle(c, r, col, true, -1.0, true)
 		draw_circle(c + Vector2(-1.1, -1.1), 1.0, Color(1, 1, 1, 0.28), true, -1.0, true)

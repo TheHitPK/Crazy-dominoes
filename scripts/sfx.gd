@@ -1,9 +1,12 @@
 extends Node
 ## Efectos de sonido. Casi todos se sintetizan por código; además, los audios
 ## grabados que haya en res://audio/<id>/ sustituyen al efecto de ese nombre
-## (por ahora solo "pass": al pasar suena uno al azar de esa carpeta).
+## ("pass": al pasar suena uno al azar de esa carpeta; "drink": al beber, de
+## res://audio/drinks/).
 
-## La música de fondo son las pistas que haya en res://audio/music/.
+## La música de fondo depende de la pantalla (ver music()): menú en
+## res://audio/menu/, partidas en res://audio/music/ y torneo y ranked en
+## res://audio/event/.
 
 const Settings = preload("res://scripts/settings.gd")
 
@@ -11,6 +14,8 @@ const RATE := 22050
 const CLIP_DIR := "res://audio/"
 ## Volumen de la música, por debajo de los efectos para que no los tape.
 const MUSIC_DB := -15.0
+## Efectos con audios grabados (voces): los silencia el ajuste "Audios de voz".
+const VOICE_IDS := ["pass", "drink"]
 
 var _streams := {}
 ## Audios grabados por id de efecto.
@@ -18,6 +23,9 @@ var _clips := {}
 var _last_clip := {}
 var _voice: AudioStreamPlayer
 var _music: AudioStreamPlayer
+## Pistas por tipo de música ("menu", "game", "event").
+var _sets := {}
+var _kind := "game"
 var _tracks: Array = []
 var _last_track := -1
 var _music_wanted := false
@@ -46,19 +54,38 @@ func _ready() -> void:
 	_streams["point"] = _wav(_seq([880.0, 1320.0], 0.07, 25.0))
 	_streams["gulp"] = _wav(_seq([210.0, 150.0, 200.0, 140.0], 0.11, 16.0))
 	_streams["chalk"] = _wav(_mix([_noise(0.35, 5.0, 0.35), _tone(2900.0, 0.35, 9.0, 0.05)]))
+	# Trueno de la entrada (tools/generar_trueno.py). Es un efecto, no una voz:
+	# lo silencia el ajuste de efectos, como los demás.
+	var thunder := _load_folder(CLIP_DIR + "thunder")
+	if not thunder.is_empty():
+		_streams["thunder"] = thunder[0]
 	_clips["pass"] = _load_folder(CLIP_DIR + "pass")
-	_tracks = _load_folder(CLIP_DIR + "music")
+	_clips["drink"] = _load_folder(CLIP_DIR + "drinks")
+	_sets = {"game": _load_folder(CLIP_DIR + "music"), "menu": _load_folder(CLIP_DIR + "menu"),
+			"event": _load_folder(CLIP_DIR + "event")}
+	_tracks = _sets.game
 	_music = AudioStreamPlayer.new()
 	_music.volume_db = MUSIC_DB
 	add_child(_music)
 	_music.finished.connect(_next_track)
 
 
-## Enciende o apaga la música de fondo de la partida. Suena solo si hay pistas
-## en res://audio/music/ y la música está activada en los ajustes.
-func music(on: bool) -> void:
+## Enciende o apaga la música de fondo. `kind`: "menu", "game" (partidas) o
+## "event" (torneo y ranked, más movida). Si cambia el tipo, cambia la pista.
+## Suena solo si hay pistas de ese tipo y la música está activada en los ajustes.
+func music(on: bool, kind: String = "game") -> void:
+	# La pantalla que se va apaga su música después de que la nueva encienda la
+	# suya (queue_free va diferido): si ya suena otro tipo, no se toca.
+	if not on and kind != _kind:
+		return
 	_music_wanted = on
+	if on and kind != _kind:
+		_kind = kind
+		_tracks = _sets.get(kind, [])
+		_last_track = -1
+		_music.stop()
 	refresh_audio()
+
 
 
 ## Aplica los ajustes de sonido que acaban de cambiar.
@@ -80,15 +107,24 @@ func _next_track() -> void:
 	if _tracks.size() > 1 and pick == _last_track:
 		pick = (pick + 1) % _tracks.size()
 	_last_track = pick
-	_music.stream = _tracks[pick]
+	var stream: AudioStream = _tracks[pick]
+	# Una sola pista: se repite sin corte (las generadas son bucles exactos).
+	if stream is AudioStreamOggVorbis:
+		(stream as AudioStreamOggVorbis).loop = _tracks.size() == 1
+	_music.stream = stream
 	_music.play()
+
+
+## Hay audios grabados para `id` y el ajuste de voces está activado.
+func has_voice(id: String) -> bool:
+	return not _clips.get(id, []).is_empty() and Settings.audio.pass_voice != 0
 
 
 func play(id: String, pitch: float = 1.0) -> void:
 	var stream: AudioStream = _streams.get(id)
 	var clips: Array = _clips.get(id, [])
 	# Los audios grabados y el resto de efectos se silencian por separado (ver Settings.audio).
-	if id == "pass" and Settings.audio.pass_voice == 0:
+	if id in VOICE_IDS and Settings.audio.pass_voice == 0:
 		clips = []
 	if clips.is_empty() and Settings.audio.sfx == 0:
 		return

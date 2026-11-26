@@ -7,6 +7,7 @@ signal sent
 
 const FancyButton = preload("res://scripts/fancy_button.gd")
 const UI = preload("res://scripts/ui_theme.gd")
+const UISkin = preload("res://scripts/ui_skin.gd")
 
 enum { TEXT, EMOJI }
 ## Emojis de Twemoji (ver emoji/CREDITOS.txt): imágenes, para que se vean
@@ -59,13 +60,8 @@ func _ready() -> void:
 		if ev is InputEventMouseButton and ev.pressed:
 			close())
 
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = UI.SURFACE
-	sb.border_color = UI.GOLD
-	sb.set_border_width_all(2)
-	sb.set_corner_radius_all(UI.RADIUS)
 	_panel = Panel.new()
-	_panel.add_theme_stylebox_override("panel", sb)
+	UISkin.dress(_panel)
 	_panel.position = Vector2(20, 24.0 - top)
 	_panel.size = Vector2(W, 1046)
 	_panel.pivot_offset = Vector2(W * 0.5, 0)
@@ -75,18 +71,18 @@ func _ready() -> void:
 	title.text = "Chat de la sala"
 	title.add_theme_font_size_override("font_size", UI.TITLE)
 	title.add_theme_color_override("font_color", UI.GOLD)
-	title.position = Vector2(24, 10)
+	title.position = Vector2(30, 12)
 	title.size = Vector2(500, 70)
 	title.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
 	_panel.add_child(title)
+	UISkin.title(title)
 	var close_btn := _button("X", UI.NEUTRAL, Rect2(W - 104, 8, 84, 76), UI.BUTTON)
 	close_btn.tooltip_text = "Cerrar"
 	close_btn.pressed.connect(close)
 
-	var log_sb := StyleBoxFlat.new()
-	log_sb.bg_color = Color(0, 0, 0, 0.3)
-	log_sb.set_corner_radius_all(UI.RADIUS)
-	log_sb.set_content_margin_all(14)
+	var log_sb := UISkin.field_box(14.0)
+	log_sb.content_margin_top = 14.0
+	log_sb.content_margin_bottom = 14.0
 	_log = RichTextLabel.new()
 	_log.add_theme_stylebox_override("normal", log_sb)
 	_log.add_theme_font_size_override("normal_font_size", UI.CAPTION)
@@ -97,16 +93,8 @@ func _ready() -> void:
 	_log.size = Vector2(W - 40, 290)
 	_panel.add_child(_log)
 
-	var field_sb := StyleBoxFlat.new()
-	field_sb.bg_color = UI.SURFACE_SOFT
-	field_sb.border_color = UI.BORDER
-	field_sb.set_border_width_all(2)
-	field_sb.set_corner_radius_all(UI.RADIUS)
-	field_sb.content_margin_left = 18
-	field_sb.content_margin_right = 18
-	var focus_sb := field_sb.duplicate() as StyleBoxFlat
-	focus_sb.border_color = UI.GOLD
-	focus_sb.set_border_width_all(4)
+	var field_sb := UISkin.field_box(18.0)
+	var focus_sb := UISkin.field_focus_box(18.0)
 	_field = LineEdit.new()
 	_field.add_theme_stylebox_override("normal", field_sb)
 	_field.add_theme_stylebox_override("focus", focus_sb)

@@ -7,6 +7,32 @@ pero sin publicar, para iOS.
 
 ## Qué tiene
 
+- **Modos de juego**: Clásico, Por rivales (solo cuentan las fichas de los
+  rivales) y Capicúa (+25 al dominar con una ficha que casa en los dos
+  extremos). Meta de 50, 100, 150 o 200 puntos. En red los elige el anfitrión.
+- **Jugadores** (contra la CPU): parejas, todos contra todos (4 sin
+  compañero, premio x1,75) o 1 contra 1 con pozo para robar. En red, parejas.
+- **Monedas y apuestas**: contra la CPU se apuesta (de 50 a 2.500) y al ganar
+  se cobra x1,8, x2,2 o x2,8 según la dificultad. Regalo cada 24 horas con
+  racha, ayuda si te quedas sin monedas, niveles que desbloquean apuestas y
+  dificultades, y tienda de fichas y mesas. Por ahora se guarda en el teléfono.
+- **Doble nueve** (55 fichas, 10 por jugador) y modo **Cincos** (los
+  extremos múltiplo de 5 puntúan al momento), contra la CPU.
+- **Partida rápida** (a 50, sin apuesta, más deprisa) y **partida guiada** con
+  consejos paso a paso; la primera vez se ofrece sola y da 200 monedas.
+- **Torneo**: cuadro de 8 (tú y 7 CPU) con cuartos, semifinal y final a 1
+  contra 1. Tres copas con entrada y premio según hasta dónde llegues.
+- **Ranked en línea**: 2 contra 2 contra otras personas (si en 30 s no hay
+  4, se rellena con CPU), ligas de Bronce a Maestro con puntos (PR),
+  temporadas de un mes con premio y tabla de clasificación. Las cuentas viven
+  en Supabase (ver [servidor/SUPABASE.md](servidor/SUPABASE.md)).
+- **Desafío del día**: el mismo reparto para todos, con racha de días.
+- **Interacción**: pista (la jugada de la CPU difícil), reacciones con emojis
+  tocando la placa de un jugador (la CPU contesta), vibración, invitar por
+  WhatsApp con el código de la sala y pantalla de récords.
+- **Anuncios y compras** (en modo prueba, ver
+  [servidor/ANUNCIOS_Y_PAGOS.md](servidor/ANUNCIOS_Y_PAGOS.md)): doblar el
+  premio, monedas gratis, paquetes de monedas, sin anuncios y VIP.
 - **Contra la CPU**, en tres niveles. El difícil deduce qué números le faltan a
   cada rival por sus pases y simula la mano cientos de veces (Monte Carlo).
 - **Con amigos en la misma wifi**: un teléfono crea la sala, hace de servidor y
@@ -26,14 +52,29 @@ pero sin publicar, para iOS.
 **Casi no hay escenas ni imágenes.** [scenes/main.tscn](scenes/main.tscn) es un
 solo nodo con [scripts/main.gd](scripts/main.gd), y todo lo demás (pantallas,
 mesa, fichas, manos, botones) se crea y se dibuja desde código con `_draw()`.
-Los únicos recursos son los audios de `audio/` y los emoji de `emoji/`.
+Los únicos recursos son los audios de `audio/`, los emoji de `emoji/` y las
+texturas de `assets/ui/` (generadas con `tools/generar_ui.py` y
+`tools/generar_kit.py`). El estilo visual común está en [DISEÑO.md](DISEÑO.md).
 
 ```
 project.godot          Configuración: 720x1280 vertical, renderizador Compatibility, 60 fps
 scenes/main.tscn       Escena raíz (un nodo)
 scripts/
   main.gd              Raíz: lee argumentos, cambia de pantalla con fundido, arranca el servidor con --server
-  menu.gd              Menú principal, reglas y acceso a Personalizar
+  menu.gd              Menú principal: modo y meta, Contra la CPU (dificultad) o En línea, reglas y Personalizar
+  mode_carousel.gd     Carrusel de tarjetas de modos de juego (se desliza con el dedo)
+  wallet.gd            Monedas, nivel y experiencia, regalo diario, ayuda y tienda (user://wallet.cfg)
+  fancy_button.gd      Botón común: color plano con relieve (o textura en el menú), crece al pasar el ratón y se hunde al pulsar
+  ui_skin.gd           Texturas de assets/ui/, fuente serif de las tarjetas y degradado dorado del título
+  coin_icon.gd         Moneda del juego (assets/ui/coin_domino.png)
+  popup.gd             Base de los paneles del menú (capa, marco, título, animación)
+  shop.gd, store.gd    Tienda (panel) y catálogo de compras con dinero (modo prueba)
+  ads.gd               Anuncios con premio y entre partidas, con sus reglas de frecuencia (modo prueba)
+  tournament.gd, tournament_panel.gd   Torneo de 8 y su cuadro
+  ranked.gd, ranked_panel.gd           Ligas, PR y temporadas (cálculo puro) y pantalla del ranked en línea
+  cloud.gd             Servidor: cuentas en Supabase (o en un archivo, para probar)
+  daily_challenge.gd, challenge_panel.gd   Desafío del día
+  stats.gd, stats_panel.gd             Récords (user://stats.cfg)
   online.gd            "Jugar con amigos": entrar, salas públicas y sala de espera
   game.gd              La partida: turnos, animaciones, arrastre de fichas, marcador, HUD (local y en red)
   domino_state.gd      Reglas puras del dominó (sin nodos): reparto, jugadas legales, tranca, puntos
@@ -45,8 +86,14 @@ scripts/
   avatar.gd            Círculo de avatar: foto o icono dibujado
   customize.gd         Panel de personalización con vista previa
   table.gd, tile.gd, hand.gd, glass.gd, chalk_board.gd   Mesa, fichas, manos, vasos y pizarras, dibujados por código
-  fancy_button.gd, ui_theme.gd, signal_meter.gd          Botón, medidas y colores comunes, indicador de señal
+  ui_theme.gd, signal_meter.gd                           Medidas y colores comunes, indicador de señal
+assets/ui/             Texturas del menú y kit común kit_* (marco de panel, botón, campo, círculos)
+assets/brand/          Marca: icono de la app, iconos adaptables de Android y pantalla de carga
+tools/generar_marca.py Genera assets/brand/ con Pillow
+tools/generar_ui.py    Genera las texturas del menú con Pillow; la moneda se recorta de una imagen de referencia
+tools/generar_kit.py   Genera el kit común (assets/ui/kit_*): marco, botón, campo, círculos e iconos
 audio/pass/            Audios que suenan al pasar (uno al azar)
+audio/drinks/          Audios que suenan al beber (uno al azar; en .ogg Vorbis, Godot no lee Opus)
 audio/music/           Música de fondo de la partida
 emoji/                 Emojis del chat (Twemoji)
 web/                   Export web ya generado (lo publica Render como sitio estático)
@@ -82,8 +129,9 @@ pasa y piden jugadas.
   Docker sobre Render. La conexión es `wss://` y el puerto sale de la variable
   `PORT`.
 - Las RPC viven en `/root/Main/Net` y, las añadidas después de la primera
-  versión, en `/root/Main/Net/Lobby`. Esa ruta tiene que ser igual en todos los
-  equipos.
+  versión, en `/root/Main/Net/Lobby` (salas públicas y chat) y
+  `/root/Main/Net/Modes` (modos y metas). Esas rutas tienen que ser iguales en
+  todos los equipos.
 
 ## Ejecutar
 
@@ -106,6 +154,7 @@ godot --headless --path . -- --net-create=localhost:8910 --net-humans=1   # clie
 | APK Android | Godot → Proyecto → Exportar → Android | — |
 | Web | `godot --headless --path . --export-release "Web" web/index.html` y subir `web/` | [servidor/WEB.md](servidor/WEB.md) |
 | Servidor en línea | `git push` a la rama conectada a Render (Docker) | [servidor/RENDER.md](servidor/RENDER.md) |
+| Cuentas y ranked | Proyecto de Supabase + 2 variables en Render | [servidor/SUPABASE.md](servidor/SUPABASE.md) |
 | Servidor en un VPS o en este PC | `servidor/iniciar_servidor.bat` o export Linux dedicado | [servidor/LEEME.md](servidor/LEEME.md) |
 
 **El servidor y los clientes tienen que llevar la misma versión de las reglas y

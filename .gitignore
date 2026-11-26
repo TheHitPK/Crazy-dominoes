@@ -10,6 +10,9 @@ build/
 # Notas de voz originales sin convertir
 audio/originales/
 
+# Claves de Supabase para probar el servidor en este PC (ver servidor/SUPABASE.md)
+servidor/supabase.env
+
 # Registros del servidor al probarlo en este PC
 servidor/*.log
 servidor/*.err

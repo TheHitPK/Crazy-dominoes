@@ -29,6 +29,8 @@ COPY scenes ./scenes
 COPY scripts ./scripts
 # chat.gd (que usa net.gd) precarga los emoji: sin ellos el servidor no compila.
 COPY emoji ./emoji
+# project.godot apunta al icono y a la pantalla de carga: sin ellos avisa al importar.
+COPY assets/brand ./assets/brand
 
 # No se ejecuta como root. Los emoji se importan aquí una vez: sin la caché
 # .godot/ el proyecto no puede cargarlos.

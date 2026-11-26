@@ -1,6 +1,7 @@
-# La imagen del servidor solo necesita project.godot, scenes/, scripts/ y emoji/.
+# La imagen del servidor solo necesita project.godot, scenes/, scripts/, emoji/ y assets/brand/.
 *
 !project.godot
 !scenes
 !scripts
 !emoji
+!assets/brand

@@ -28,15 +28,22 @@ const GOLD := Color(1.0, 0.84, 0.3)
 const CREAM := Color(0.97, 0.93, 0.82)
 ## Texto secundario: crema algo apagado, pero con contraste suficiente sobre la madera oscura.
 const CREAM_MUTED := Color(0.97, 0.93, 0.82, 0.86)
+## Títulos de fila y de sección dentro de los paneles.
+const LABEL := Color(0.95, 0.87, 0.7)
 const WARN := Color(1.0, 0.72, 0.42)
 const SURFACE := Color(0.13, 0.08, 0.05, 0.97)
 const SURFACE_SOFT := Color(0.08, 0.05, 0.03, 0.88)
 const BORDER := Color(0.85, 0.65, 0.3, 0.9)
-const PRIMARY := Color(0.25, 0.6, 0.3)
-const SECONDARY := Color(0.2, 0.45, 0.85)
-const ACCENT := Color(0.15, 0.5, 0.6)
-const NEUTRAL := Color(0.45, 0.33, 0.22)
-const DANGER := Color(0.72, 0.2, 0.18)
+## Colores de botón. Con el kit (DISEÑO.md) tiñen una cara en grises que va de
+## blanco a gris: el color se ve tal cual arriba y algo más oscuro abajo.
+## Verde: la acción principal (Jugar, Listo). Azul: la secundaria (En línea,
+## Otra foto). Madera: navegar y cerrar. Oro: comprar. Rojo: salir o borrar.
+const PRIMARY := Color(0.3, 0.78, 0.26)
+const SECONDARY := Color(0.16, 0.52, 0.95)
+const ACCENT := Color(0.12, 0.6, 0.72)
+const NEUTRAL := Color(0.62, 0.4, 0.22)
+const DANGER := Color(0.85, 0.24, 0.2)
+const BUY := Color(0.95, 0.66, 0.12)
 const TEAM_US := Color(0.2, 0.45, 0.85)
 const TEAM_THEM := Color(0.8, 0.22, 0.2)
 const SWITCH_ON := Color(0.2, 0.5, 0.6)

@@ -7,3 +7,5 @@ extends RefCounted
 ## "Crear sala" y los demás solo ponen el código.
 ## Si se deja vacía (""), la pantalla vuelve a pedir la dirección a mano.
 const SERVER_URL := "crazy-dominoes.onrender.com"
+## Versión web del juego, para el enlace de "Invitar por WhatsApp".
+const WEB_URL := "https://crazy-dominoes-web.onrender.com"

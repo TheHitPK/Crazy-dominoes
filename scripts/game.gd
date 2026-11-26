@@ -21,8 +21,13 @@ const UI = preload("res://scripts/ui_theme.gd")
 const Avatar = preload("res://scripts/avatar.gd")
 const Chat = preload("res://scripts/chat.gd")
 const SignalMeter = preload("res://scripts/signal_meter.gd")
+const Wallet = preload("res://scripts/wallet.gd")
+const UISkin = preload("res://scripts/ui_skin.gd")
+const Stats = preload("res://scripts/stats.gd")
+const Tournament = preload("res://scripts/tournament.gd")
+const Daily = preload("res://scripts/daily_challenge.gd")
+const Ads = preload("res://scripts/ads.gd")
 
-const TARGET_SCORE := 100
 const BOARD_SCALE := 1.25
 ## Radio (en unidades de pantalla) dentro del cual un toque cuenta como acierto.
 const TOUCH_RADIUS := 80.0
@@ -44,6 +49,12 @@ const SEAT_ROT := [0.0, -PI / 2.0, PI, PI / 2.0]
 const SEAT_SCALE := [2.0, 0.62, 0.62, 0.62]
 const SLATE_SCALE := 1.1
 const TEAM_COLORS := [Color(0.2, 0.45, 0.85), Color(0.8, 0.22, 0.2)]
+## Sin parejas cada asiento lleva su color (ver _seat_color).
+const SOLO_COLORS := [Color(0.2, 0.45, 0.85), Color(0.8, 0.22, 0.2), Color(0.85, 0.6, 0.15), Color(0.45, 0.7, 0.3)]
+const SOLO_NAMES := ["Tú", "Este", "Norte", "Oeste"]
+const DUEL_NAMES := ["Tú", "", "Rival", ""]
+## Nombre corto del formato para el cartel de la mano (el de parejas no se escribe).
+const FORMAT_SHORT := ["", "Todos", "1 vs 1"]
 ## Aspecto de las CPU: [piel, estilo de mano, color de uñas/guantes, bebida].
 ## El del jugador 0 sale de los ajustes.
 const CPU_LOOKS := [
@@ -59,11 +70,47 @@ const CPU_AVATARS := [0, Avatar.BOLT, Avatar.CROWN, Avatar.MOON]
 const GOLD := Color(1.0, 0.84, 0.3)
 const CREAM := Color(0.97, 0.93, 0.82)
 ## Interruptores de sonido del panel de ajustes: clave en Settings.audio -> texto.
-const SOUND_OPTIONS := {"pass_voice": "Audios al pasar", "sfx": "Efectos de sonido", "music": "Música"}
+const SOUND_OPTIONS := {"pass_voice": "Audios de voz", "sfx": "Efectos de sonido", "music": "Música",
+		"vibrate": "Vibración"}
+## Premio de la primera partida guiada.
+const TUTORIAL_REWARD := 200
+## Reacciones rápidas al tocar la placa de un jugador (índices en Chat.EMOJIS).
+const REACTIONS := [8, 0, 9, 3, 2, 6]
+## Lo que la CPU contesta o suelta cuando pasa algo en la mesa.
+const CPU_HAPPY := [0, 1, 8, 9, 10]
+const CPU_SAD := [3, 4, 5, 2]
 
 var difficulty: int = AI.MEDIUM
+## Modo de juego (State.CLASSIC...) y puntos para ganar. En red los manda el servidor.
+var mode: int = State.CLASSIC
+## Parejas, todos contra todos o 1 contra 1 (State.PAIRS...). En red, siempre parejas.
+var format: int = State.PAIRS
+var target: int = State.DEFAULT_TARGET
+## Partida con apuesta, elegida en el menú: la apuesta `bet` ya se cobró y al
+## terminar se pagan el premio (si se gana) y la experiencia (ver Wallet).
+var paid := false
+var bet := 0
 ## Modo demostración: la CPU juega también tu mano.
 var autoplay := false
+## Doble nueve (55 fichas, 10 por jugador). Solo contra la CPU.
+var double_nine := false
+## Partida de torneo, ranked o desafío del día ("" = normal). Ver main.gd.
+var event := ""
+## Música de esta partida ("game", o "event" en torneo y ranked).
+var _music_kind := "game"
+## Desafío del día: semilla del reparto (0 = al azar).
+var deal_seed := 0
+## El resultado del evento ya se apuntó (para no contarlo dos veces al salir).
+var _event_reported := false
+var _hint_btn: FancyButton
+var _reactions: Panel
+## Partida guiada: consejos ya mostrados y el panel donde salen.
+var _coached := {}
+var _coach_panel: Panel
+var _coach_text: Label
+var _coach_ok: FancyButton
+## Velocidad del juego antes de la partida rápida, para devolverla al salir.
+var _speed_before := 1.0
 var sfx: Node
 ## Partida en red (ver net.gd). Si es null, se juega en este teléfono contra CPU.
 ## En red el servidor reparte y decide; aquí los asientos se numeran siempre
@@ -96,6 +143,8 @@ var starter := -1
 
 var tiles := {}
 var hand_tiles: Array = [[], [], [], []]
+## Fichas del pozo (1 contra 1), boca abajo en el lado izquierdo de la mesa.
+var pool_tiles: Array = []
 var board_tiles: Array = []
 ## Extremos de la cadena: [izquierdo, derecho]. Cada uno {p, d, vs, next_h, vn}.
 var arms: Array = []
@@ -223,19 +272,35 @@ func _turn_rot() -> float:
 
 
 func _ready() -> void:
+	# El juego de fichas es global en State: en red, siempre doble seis.
+	State.use_set(double_nine and net == null)
+	if event == "quick":
+		# Rápida: todo va un 30 % más deprisa (CPU, animaciones y pausas).
+		_speed_before = Engine.time_scale
+		Engine.time_scale = _speed_before * 1.3
 	_layout()
 	rng.randomize()
 	board_off = play_rect.get_center()
 	if net != null and not net.events.is_empty():
 		# El reparto que abre la partida ya dice quién se sienta dónde.
 		_net_seats(net.events[0])
+	if net != null:
+		format = State.PAIRS
+	elif format == State.SOLO and names == NAMES:
+		names = SOLO_NAMES.duplicate()
+	elif format == State.DUEL and names == NAMES:
+		# En el torneo, main.gd ya puso el nombre del rival.
+		names = DUEL_NAMES.duplicate()
 	add_child(Table.new())
 	for p in 4:
 		var h: Hand = Hand.new()
 		h.position = seat_pos[p]
 		h.rotation = SEAT_ROT[p]
 		h.k = SEAT_SCALE[p]
-		h.sleeve = TEAM_COLORS[p % 2]
+		h.sleeve = _seat_color(p)
+		# Con muchas fichas (robadas del pozo) se juntan para no salirse de la pantalla.
+		h.max_span = 660.0 if p == 0 else (420.0 if p == 2 else 520.0)
+		h.visible = _seated(p)
 		var look: Dictionary = seat_looks[p]
 		if p == 0:
 			h.skin = Settings.skin_color()
@@ -271,6 +336,7 @@ func _ready() -> void:
 		g.grip = hands_gfx[p].fill()
 		g.toward = Vector2.DOWN.rotated(SEAT_ROT[p])
 		g.z_index = 6
+		g.visible = _seated(p)
 		add_child(g)
 		glasses.append(g)
 	tile_layer = Node2D.new()
@@ -288,7 +354,10 @@ func _ready() -> void:
 	_build_hud()
 	_apply_show_hands()
 	if sfx != null:
-		sfx.music(true)
+		# Torneo y ranked llevan un jazz más movido que las partidas normales.
+		var lively: bool = event == "tournament" or (net != null and net.room_info.get("ranked", false))
+		_music_kind = "event" if lively else "game"
+		sfx.music(true, _music_kind)
 	if net != null:
 		_net_loop()
 	else:
@@ -296,8 +365,11 @@ func _ready() -> void:
 
 
 func _exit_tree() -> void:
+	State.use_set(false)
+	if event == "quick":
+		Engine.time_scale = _speed_before
 	if sfx != null:
-		sfx.music(false)
+		sfx.music(false, _music_kind)
 	if _ai_task >= 0:
 		WorkerThreadPool.wait_for_task_completion(_ai_task)
 		_ai_task = -1
@@ -305,8 +377,22 @@ func _exit_tree() -> void:
 
 # ---------------------------------------------------------------- flujo de juego
 
+## En 1 contra 1 solo se sientan 0 (tú) y 2 (enfrente).
+func _seated(p: int) -> bool:
+	return format != State.DUEL or p % 2 == 0
+
+
+func _seat_color(p: int) -> Color:
+	return TEAM_COLORS[p % 2] if format == State.PAIRS else SOLO_COLORS[p]
+
+
 func _start_match() -> void:
-	scores = [0, 0]
+	if deal_seed != 0:
+		# Desafío del día: el mismo reparto para todos.
+		rng.seed = deal_seed
+	_event_reported = false
+	# Un marcador por pareja o, sin parejas, uno por asiento.
+	scores = [0, 0] if format == State.PAIRS else [0, 0, 0, 0]
 	hand_no = 0
 	starter = -1
 	_play_hand()
@@ -316,21 +402,28 @@ func _play_hand() -> void:
 	hand_no += 1
 	_reset_round()
 	state = State.new()
+	state.mode = mode
+	state.format = format
 	state.deal(rng)
 	var opening := starter < 0
 	if opening:
-		# Primera mano: sale quien tenga el doble seis y debe abrir con él.
-		starter = state.holder_of(State.DOUBLE_SIX)
-		state.forced = State.DOUBLE_SIX
+		# Primera mano: sale quien tenga el doble seis y debe abrir con él (en
+		# 1 contra 1 puede estar en el pozo: entonces, el doble más alto).
+		state.forced = state.opening_tile()
+		starter = state.holder_of(state.forced)
 	state.turn = starter
 	_refresh_score(false)
 	await _announce_start(opening)
+	await _coach("start", "Juegas en pareja con quien tienes enfrente, arriba. Gana la pareja que llegue antes a %d puntos." % target)
 	while not state.is_over():
 		var p := state.turn
 		_set_active(p)
 		var moves: Array = state.legal_moves(p)
 		if moves.is_empty():
-			await _do_pass(p)
+			if state.can_draw():
+				await _do_draw(p)
+			else:
+				await _do_pass(p)
 			continue
 		var mv: int
 		if p == 0 and not autoplay:
@@ -344,8 +437,11 @@ func _play_hand() -> void:
 ## Reparte con animación y anuncia quién sale.
 func _announce_start(opening: bool) -> void:
 	await _animate_deal()
-	if opening:
-		_show_banner("Sale el doble seis: %s" % names[starter], GOLD)
+	var top_double := State.code(State.top, State.top)
+	if opening and state.forced != top_double:
+		_show_banner("Sale el %d/%d: %s" % [State.hi(state.forced), State.lo(state.forced), names[starter]], GOLD)
+	elif opening:
+		_show_banner("Sale el doble %s: %s" % ["nueve" if State.top == 9 else "seis", names[starter]], GOLD)
 	else:
 		_show_banner("Sales tú" if starter == 0 else "Sale %s" % names[starter], GOLD)
 	await _wait(1.0)
@@ -362,7 +458,14 @@ func _human_turn(moves: Array) -> int:
 		var ok := _playable(t.code)
 		t.tween_marks(1.0 if ok else 0.0, 0.0 if ok else 1.0)
 	_layout_hand(0, 0.2)
+	await _coach("turn", "Te toca. Las fichas que brillan casan con la mesa: arrastra una hasta la mesa o tócala para jugarla.")
+	if _two_sided(moves):
+		await _coach("sides", "Esa ficha casa por los dos lados: suéltala en el extremo que quieras, se marcan en dorado.")
+	elif _coached.has("turn"):
+		await _coach("hint", "Si dudas, el botón Pista de la derecha te dice la mejor jugada (cuesta unas monedas).")
+	_show_hint_button(true)
 	var mv: int = await _human_done
+	_show_hint_button(false)
 	_awaiting = false
 	_choices = []
 	_hover = null
@@ -417,6 +520,14 @@ func _do_move(p: int, mv: int) -> void:
 	t.tween_marks(0.6, 0.0)
 	_play("clack", rng.randf_range(0.92, 1.1))
 	_impact(target)
+	if mode == State.FIVES and net == null and state.last_fives > 0:
+		var team := state.team_of(p)
+		scores[team] += state.last_fives
+		_refresh_score(true)
+		_bubble(p, "¡%d!  Cincos" % state.last_fives, 0.9)
+		_play("point")
+	if p == 0 and not autoplay:
+		_vibrate(25)
 	if p != 0 and rng.randf() < 0.12:
 		_drink(p)
 	await _wait(0.18)
@@ -427,8 +538,8 @@ func _do_move(p: int, mv: int) -> void:
 func _commit_move(p: int, mv: int) -> Tile:
 	var code := mv >> 1
 	var side := mv & 1
-	var a := code >> 3
-	var b := code & 7
+	var a := State.hi(code)
+	var b := State.lo(code)
 	var dbl := a == b
 	var t: Tile = tiles[code]
 	hand_tiles[p].erase(t)
@@ -437,9 +548,10 @@ func _commit_move(p: int, mv: int) -> Tile:
 		t.board_pos = Vector2.ZERO
 		t.board_rot = (0.0 if dbl else -PI * 0.5) + _turn_rot()
 		var half := S * 0.5 if dbl else S
+		# "cross": la última ficha de ese extremo es un doble atravesado (ver _calc_place).
 		arms = [
-			{"p": Vector2(-half, 0), "d": Vector2.LEFT, "vs": -1.0, "next_h": Vector2.RIGHT, "vn": 0},
-			{"p": Vector2(half, 0), "d": Vector2.RIGHT, "vs": 1.0, "next_h": Vector2.LEFT, "vn": 0},
+			{"p": Vector2(-half, 0), "d": Vector2.LEFT, "vs": -1.0, "next_h": Vector2.RIGHT, "vn": 0, "cross": dbl},
+			{"p": Vector2(half, 0), "d": Vector2.RIGHT, "vs": 1.0, "next_h": Vector2.LEFT, "vn": 0, "cross": dbl},
 		]
 	else:
 		var arm: Dictionary = arms[side]
@@ -456,9 +568,26 @@ func _commit_move(p: int, mv: int) -> Tile:
 		arm.d = pl.d
 		arm.next_h = pl.next_h
 		arm.vn = pl.vn
+		arm.cross = pl.cross
 	board_tiles.append(t)
 	state.apply_move(mv)
 	return t
+
+
+## Sin ficha que case y con fichas en el pozo: roba una (sola, sin tocar nada).
+func _do_draw(p: int) -> void:
+	var code := state.draw()
+	var t: Tile = tiles[code]
+	pool_tiles.erase(t)
+	hand_tiles[p].append(t)
+	t.z_index = 3
+	if p == 0 and not autoplay:
+		t.flip_to(1.0, 0.25, 0.1)
+	_layout_hand(p, 0.3)
+	hands_gfx[p].set_count(hand_tiles[p].size())
+	_refresh_plates()
+	_play("tick", rng.randf_range(0.9, 1.1))
+	await _wait(0.35 if p == 0 else 0.3)
 
 
 func _do_pass(p: int) -> void:
@@ -474,6 +603,7 @@ func _do_pass(p: int) -> void:
 func _auto_pass() -> void:
 	for t: Tile in hand_tiles[0]:
 		t.tween_marks(0.0, 1.0)
+	await _coach("pass", "No tienes ninguna ficha que case con los extremos: pasas solo y le toca al siguiente.")
 	await _wait(PASS_PAUSE)
 	for t: Tile in hand_tiles[0]:
 		t.tween_marks(0.0, 0.0)
@@ -494,7 +624,16 @@ func _drink(p: int) -> void:
 	var g: Glass = glasses[p]
 	var seat: Vector2 = seat_pos[p]
 	var target := g.position.lerp(seat, 0.08) + g.toward * 50.0
-	g.sip(target, _play.bind("gulp", rng.randf_range(0.9, 1.15)))
+	g.sip(target, _drink_sound)
+
+
+## Al beber suena una de las voces de audio/drinks/ o, si no hay (o están
+## apagadas en los ajustes), el trago sintetizado.
+func _drink_sound() -> void:
+	if sfx != null and sfx.has_voice("drink"):
+		_play("drink")
+	else:
+		_play("gulp", rng.randf_range(0.9, 1.15))
 
 
 func _finish_hand() -> void:
@@ -504,8 +643,12 @@ func _finish_hand() -> void:
 		_show_banner("¡TRANCA!", Color(1.0, 0.45, 0.35))
 	elif res.winner == 0:
 		_show_banner("¡Dominaste!", GOLD)
+		_vibrate(80)
 	else:
 		_show_banner("¡Dominó de %s!" % names[res.winner], GOLD)
+	if net == null and not autoplay:
+		Stats.hand_done(res.winner == 0 and not res.blocked, res.capicua, res.blocked)
+		_cpu_react(res)
 	# Se destapan las fichas que quedaron en las manos.
 	for p in range(1, 4):
 		var i := 0
@@ -522,36 +665,91 @@ func _finish_hand() -> void:
 		scores[team] += res.points
 		starter = res.winner
 	_refresh_score(true)
-	var match_over: bool = scores[0] >= TARGET_SCORE or scores[1] >= TARGET_SCORE
+	# Mi marcador es siempre el 0 (mi pareja o yo). Solo suma uno por mano, así
+	# que nunca llegan dos a la meta a la vez.
+	var match_over: bool = scores.max() >= target
+	var won: bool = scores[0] >= target
 
 	var title := "Tranca empatada"
 	var color := CREAM
 	if match_over:
-		title = "¡VICTORIA!" if scores[0] > scores[1] else "DERROTA"
-		color = GOLD if scores[0] > scores[1] else Color(1.0, 0.45, 0.4)
+		title = "¡VICTORIA!" if won else "DERROTA"
+		color = GOLD if won else Color(1.0, 0.45, 0.4)
 	elif team == 0:
-		title = "¡Mano para nosotros!"
+		title = "¡Mano para nosotros!" if format == State.PAIRS else "¡Mano para ti!"
 		color = Color(0.55, 0.85, 1.0)
-	elif team == 1:
-		title = "Mano para ellos"
+	elif team > 0:
+		title = "Mano para ellos" if format == State.PAIRS else "Mano para %s" % names[team]
 		color = Color(1.0, 0.55, 0.5)
 	var lines: Array = []
 	if res.blocked:
 		lines.append("Juego trancado: gana quien tenga menos puntos en la mano.")
 	else:
 		lines.append("Te quedaste sin fichas." if res.winner == 0 else "%s se quedó sin fichas." % names[res.winner])
-	lines.append("Puntos de la mano: +%d" % res.points if team >= 0 else "Nadie suma puntos.")
+	if team < 0:
+		lines.append("Nadie suma puntos.")
+	elif res.capicua:
+		lines.append("Puntos de la mano: +%d  (¡capicúa! +%d)" % [res.points, State.CAPICUA_BONUS])
+	else:
+		lines.append("Puntos de la mano: +%d" % res.points)
+	if mode == State.FIVES:
+		var mine: int = state.fives[state.team_of(0)]
+		var theirs := 0
+		for q in state.fives.size():
+			if q != state.team_of(0):
+				theirs += state.fives[q]
+		lines.append("Cincos en la mano: tú %d  ·  rivales %d" % [mine, theirs])
 	lines.append("")
 	lines.append("%s: %d   ·   %s: %d" % [names[0], res.totals[0], names[2], res.totals[2]])
-	lines.append("%s: %d   ·   %s: %d" % [names[1], res.totals[1], names[3], res.totals[3]])
+	if format != State.DUEL:
+		lines.append("%s: %d   ·   %s: %d" % [names[1], res.totals[1], names[3], res.totals[3]])
 	lines.append("")
-	lines.append("Marcador:  Nosotros %d  —  %d Ellos" % [scores[0], scores[1]])
-	var buttons: Array = [["Siguiente mano", "next", Color(0.25, 0.6, 0.3)]]
+	if format == State.PAIRS:
+		lines.append("Marcador:  Nosotros %d  —  %d Ellos" % [scores[0], scores[1]])
+	else:
+		var parts: Array = []
+		for q in 4:
+			if _seated(q):
+				parts.append("%s %d" % [names[q], scores[q]])
+		lines.append("Marcador:  " + "  ·  ".join(parts))
+	var buttons: Array = [["Siguiente mano", "next", UI.PRIMARY]]
+	var reward := {}
+	if match_over and net == null and (paid or event != ""):
+		# Con apuesta, premio y experiencia; en torneo, ranked o desafío, solo
+		# experiencia (sus premios van aparte, en _event_result).
+		reward = Wallet.finish_match(won, difficulty, target, bet if paid else 0, format)
+		# En lugar de la línea en blanco antes del marcador.
+		lines[lines.size() - 2] = ("+%d monedas  ·  +%d XP" % [reward.coins, reward.xp]) if reward.coins > 0 \
+				else "+%d XP" % reward.xp
+		if reward.level_up:
+			_level_up(reward)
+	if match_over and net == null:
+		if not autoplay:
+			Stats.match_done(won, int(reward.get("coins", 0)))
+		var ev_line := _event_result(won) if event != "" else ""
+		if ev_line != "":
+			lines.insert(0, ev_line)
 	if match_over:
-		var again: Array = ["Volver a la sala", "room"] if net != null else ["Jugar de nuevo", "again"]
-		buttons = [[again[0], again[1], Color(0.25, 0.6, 0.3)], ["Menú", "menu", Color(0.45, 0.35, 0.25)]]
-		_play("win" if scores[0] > scores[1] else "lose")
-		if scores[0] > scores[1]:
+		var again_text := "Jugar de nuevo"
+		if paid and net == null:
+			again_text = "Otra (%d)" % bet
+		var again: Array = ["Volver a la sala", "room"] if net != null else [again_text, "again"]
+		if net != null and net.room_info.get("ranked", false):
+			# Ranked: el resultado lo manda el servidor justo al acabar.
+			again = ["Continuar", "room"]
+			var rr: Dictionary = net.ranked_last
+			if not rr.is_empty():
+				lines.insert(0, "%+d PR  ·  %s" % [int(rr.delta), str(rr.rank)])
+		buttons = [[again[0], again[1], UI.PRIMARY], ["Menú", "menu", UI.NEUTRAL]]
+		if event == "quick":
+			buttons = [["Otra rápida", "again", UI.PRIMARY], ["Menú", "menu", UI.NEUTRAL]]
+		elif event != "":
+			buttons = [["Continuar", "menu", UI.PRIMARY]]
+		elif int(reward.get("coins", 0)) > 0:
+			# Doblar el premio viendo un anuncio (con premio: lo pide el jugador).
+			buttons.push_front(["x2  %d" % reward.coins, "double", UI.BUY])
+		_play("win" if won else "lose")
+		if won:
 			confetti.restart()
 	if autoplay and net != null:
 		# Cliente de prueba: sigue solo.
@@ -561,9 +759,30 @@ func _finish_hand() -> void:
 			get_tree().quit()
 		net.send("sv_ready")
 		return
-	_show_end(title, color, lines, buttons)
-	var action: String = await _panel_done
+	var action := ""
+	while true:
+		await _coach("end", "Fin de la mano. Quien se queda sin fichas domina y su pareja suma los puntos de todas las fichas que quedan. Si nadie puede jugar es tranca: gana quien tenga menos puntos.")
+		_show_end(title, color, lines, buttons)
+		action = await _panel_done
+		if action != "double":
+			break
+		_hide_end()
+		var got := [false]
+		var ads := Ads.get_ads()
+		if ads != null:
+			await ads.show_rewarded(func() -> void: got[0] = true)
+		if got[0]:
+			Wallet.add_coins(int(reward.coins))
+			Stats.add("coins_won", int(reward.coins))
+			lines[lines.size() - 2] = "+%d monedas (x2)  ·  +%d XP" % [int(reward.coins) * 2, reward.xp]
+			_play("win")
+			buttons.pop_front()
 	_hide_end()
+	if match_over and net == null and not autoplay:
+		# Entre partidas, y solo si toca por frecuencia (ver ads.gd).
+		var ads := Ads.get_ads()
+		if ads != null:
+			await ads.after_match()
 	match action:
 		"next":
 			if net != null:
@@ -572,9 +791,21 @@ func _finish_hand() -> void:
 				_show_banner("Esperando a los demás…", CREAM)
 			else:
 				_play_hand()
-		"again": _start_match()
+		"again":
+			if paid and not Wallet.pay_entry(difficulty, bet):
+				# Sin monedas para otra: al menú, donde están el regalo y la ayuda.
+				exit_to_menu.emit()
+			else:
+				_start_match()
 		"room": back_to_room.emit()
 		"menu": exit_to_menu.emit()
+
+
+## Subida de nivel al terminar una partida: aviso grande con las monedas de regalo.
+func _level_up(reward: Dictionary) -> void:
+	await _wait(0.6)
+	_show_banner("¡Nivel %d!  +%d monedas  +%d gemas" % [reward.level, reward.bonus, reward.gems], GOLD)
+	confetti.restart()
 
 
 # ------------------------------------------------------------------ partida en red
@@ -640,9 +871,11 @@ func _net_hand_start(ev: Dictionary) -> void:
 	_net_seats(ev)
 	hand_no = ev.hand_no
 	difficulty = ev.difficulty
+	_net_rules(ev)
 	scores = _team_scores(ev.scores)
 	_reset_round()
 	state = State.new()
+	state.mode = mode
 	for v in 4:
 		var hand: Array = []
 		if v == 0:
@@ -668,10 +901,12 @@ func _net_resume(ev: Dictionary) -> void:
 	_net_seats(ev)
 	hand_no = ev.hand_no
 	difficulty = ev.difficulty
+	_net_rules(ev)
 	scores = _team_scores(ev.scores)
 	_net_scores = scores.duplicate()
 	_reset_round()
 	state = State.new()
+	state.mode = mode
 	_refresh_score(false)
 	var history: Array = ev.history
 	if int(ev.turn) < 0:
@@ -728,6 +963,12 @@ func _net_resume(ev: Dictionary) -> void:
 		_set_active(_vis(ev.turn))
 
 
+## Modo y meta de la sala. Un servidor anterior a los modos no los manda: clásico a 100.
+func _net_rules(ev: Dictionary) -> void:
+	mode = clampi(int(ev.get("mode", State.CLASSIC)), 0, State.MODE_NAMES.size() - 1)
+	target = int(ev.get("target", State.DEFAULT_TARGET))
+
+
 func _team_scores(server_scores: Array) -> Array:
 	var mine := my_seat % 2
 	return [int(server_scores[mine]), int(server_scores[1 - mine])]
@@ -762,7 +1003,7 @@ func _reveal(t: Tile, v: int, code: int) -> void:
 	hand[hand.find(t.code)] = code
 	tiles.erase(t.code)
 	t.code = code
-	t.set_values(code >> 3, code & 7)
+	t.set_values(State.hi(code), State.lo(code))
 	tiles[code] = t
 
 
@@ -786,6 +1027,7 @@ func _reset_round() -> void:
 	tiles.clear()
 	board_tiles.clear()
 	hand_tiles = [[], [], [], []]
+	pool_tiles = []
 	arms = []
 	board_s = BOARD_SCALE
 	board_off = play_rect.get_center()
@@ -799,24 +1041,44 @@ func _reset_round() -> void:
 
 ## Crea las fichas de todas las manos, boca abajo y amontonadas en el centro.
 func _spawn_tiles() -> void:
-	var c := play_rect.get_center()
 	for p in 4:
 		for code in state.hands[p]:
-			var t: Tile = Tile.new()
-			t.code = code
-			t.set_values(code >> 3, code & 7)
-			t.flip = 0.0
-			t.position = c + Vector2(rng.randf_range(-150, 150), rng.randf_range(-150, 150))
-			t.rotation = rng.randf_range(-PI, PI)
-			t.scale = Vector2(0.75, 0.75)
-			t.modulate.a = 0.0
-			t.z_index = 1
-			tile_layer.add_child(t)
-			t.create_tween().tween_property(t, "modulate:a", 1.0, 0.25)
-			tiles[code] = t
-			hand_tiles[p].append(t)
-		hands_gfx[p].set_count(State.HAND_SIZE)
+			hand_tiles[p].append(_new_tile(code))
+		hands_gfx[p].set_count(state.hands[p].size())
+	for code in state.pool:
+		pool_tiles.append(_new_tile(code))
 	_refresh_plates()
+
+
+func _new_tile(code: int) -> Tile:
+	var c := play_rect.get_center()
+	var t: Tile = Tile.new()
+	t.code = code
+	t.set_values(State.hi(code), State.lo(code))
+	t.flip = 0.0
+	t.position = c + Vector2(rng.randf_range(-150, 150), rng.randf_range(-150, 150))
+	t.rotation = rng.randf_range(-PI, PI)
+	t.scale = Vector2(0.75, 0.75)
+	t.modulate.a = 0.0
+	t.z_index = 1
+	tile_layer.add_child(t)
+	t.create_tween().tween_property(t, "modulate:a", 1.0, 0.25)
+	tiles[code] = t
+	return t
+
+
+## Hueco i del pozo (1 contra 1): columnas a la izquierda de la mesa, donde en
+## parejas se sentaría el rival del oeste. En doble seis son 2 columnas de 7;
+## en doble nueve (35 fichas) se llenan también 2 columnas a la derecha.
+func _bone_slot(i: int) -> Vector2:
+	var mid := play_rect.get_center().y
+	if State.top != 9:
+		return Vector2(52.0 - Table.side + (i % 2) * 46.0, mid + (i / 2 - 3) * 64.0)
+	var rows := 9
+	var col := i / rows
+	var row := i % rows
+	var x := 52.0 - Table.side + col * 46.0 if col < 2 else 668.0 + Table.side - (col - 2) * 46.0
+	return Vector2(x, mid + (row - (rows - 1) * 0.5) * 58.0)
 
 
 ## "Sopa": las fichas boca abajo se revuelven en el centro y luego se reparten.
@@ -824,11 +1086,13 @@ func _animate_deal() -> void:
 	_spawn_tiles()
 	await _shuffle_animation()
 	var idx := 0
-	for i in State.HAND_SIZE:
+	for i in State.hand_size():
 		for q in 4:
 			var p := (starter + q) % 4
+			if not _seated(p):
+				continue
 			var t: Tile = hand_tiles[p][i]
-			var sl: Array = hands_gfx[p].slot(i, State.HAND_SIZE)
+			var sl: Array = hands_gfx[p].slot(i, State.hand_size())
 			var delay := idx * 0.05
 			t.z_index = 3
 			t.fly_to(sl[0], sl[1], SEAT_SCALE[p], 0.38, delay)
@@ -837,7 +1101,11 @@ func _animate_deal() -> void:
 			if idx % 2 == 0:
 				get_tree().create_timer(delay + 0.3).timeout.connect(_play.bind("tick", 1.0))
 			idx += 1
-	await _wait(idx * 0.05 + 0.55)
+	# Lo que sobra (1 contra 1) queda boca abajo en el pozo.
+	for i in pool_tiles.size():
+		var t: Tile = pool_tiles[i]
+		t.fly_to(_bone_slot(i), 0.0, 0.7, 0.38, idx * 0.05 + i * 0.03)
+	await _wait(idx * 0.05 + pool_tiles.size() * 0.03 + 0.55)
 
 
 ## Revuelve las fichas boca abajo antes de repartir. Cada mano usa una forma
@@ -953,13 +1221,26 @@ func _calc_place(arm: Dictionary, dbl: bool) -> Dictionary:
 		turn_now = absf(p.x + d.x * length) > row_limit
 	if turn_now:
 		var n: Vector2 = arm.next_h if vertical else Vector2(0, arm.vs)
+		var next_h: Vector2 = arm.next_h if vertical else -d
+		var vn0 := 0 if vertical else 1
+		if arm.get("cross", false):
+			# Tras un doble atravesado, la ficha del giro sale por la punta del doble.
+			# Si saliera del borde, como tras una ficha normal, quedaría medio montada
+			# a su lado.
+			var tip := p - d * (S * 0.5) + n * S
+			return {"center": tip + n * S, "rot": n.angle() - PI * 0.5, "p": tip + n * (2.0 * S),
+					"d": n, "next_h": next_h, "vn": vn0, "cross": false}
 		var base := p + d * (S * 0.5)
 		return {"center": base + n * (S * 0.5), "rot": n.angle() - PI * 0.5, "p": base + n * (S * 1.5),
-				"d": n, "next_h": arm.next_h if vertical else -d, "vn": 0 if vertical else 1}
+				"d": n, "next_h": next_h, "vn": vn0, "cross": false}
 	var vn: int = arm.vn + 1 if vertical else 0
-	if dbl:
-		return {"center": p + d * (S * 0.5), "rot": d.angle(), "p": p + d * S, "d": d, "next_h": arm.next_h, "vn": vn}
-	return {"center": p + d * S, "rot": d.angle() - PI * 0.5, "p": p + d * (2.0 * S), "d": d, "next_h": arm.next_h, "vn": vn}
+	# En el tramo corto que une dos filas el doble va a lo largo, como las demás:
+	# atravesado sobresaldría por los lados y no quedaría alineado con la ficha que sigue.
+	if dbl and not vertical:
+		return {"center": p + d * (S * 0.5), "rot": d.angle(), "p": p + d * S, "d": d, "next_h": arm.next_h, "vn": vn,
+				"cross": true}
+	return {"center": p + d * S, "rot": d.angle() - PI * 0.5, "p": p + d * (2.0 * S), "d": d, "next_h": arm.next_h, "vn": vn,
+			"cross": false}
 
 
 ## Centra la cadena en la zona de juego y la encoge si ya no cabe.
@@ -985,7 +1266,7 @@ func _refit_board(skip: Tile) -> void:
 
 ## Marca en la mesa dónde caería la ficha en cada extremo de `sides`.
 func _show_ghosts(code: int, sides: Array = [0, 1]) -> void:
-	var dbl := (code >> 3) == (code & 7)
+	var dbl := State.hi(code) == State.lo(code)
 	for g: Ghost in ghosts:
 		g.visible = sides.has(g.side)
 		g.scale = Vector2(board_s, board_s)
@@ -1136,11 +1417,16 @@ func _click(pos: Vector2) -> void:
 		_bubble(0, "Elige un extremo")
 
 
+## Con muchas fichas (1 contra 1) se solapan: gana la de centro más cercano al dedo.
 func _tile_at(pos: Vector2) -> Tile:
+	var best: Tile = null
+	var best_d := INF
 	for t: Tile in hand_tiles[0]:
-		if t.hit(pos):
-			return t
-	return null
+		var d := t.global_position.distance_squared_to(pos)
+		if t.hit(pos) and d < best_d:
+			best = t
+			best_d = d
+	return best
 
 
 func _playable(code: int) -> bool:
@@ -1169,6 +1455,11 @@ func _build_hud() -> void:
 	for team in 2:
 		var board: ChalkBoard = ChalkBoard.new()
 		board.title = "NOSOTROS" if team == 0 else "ELLOS"
+		if format == State.DUEL:
+			board.title = "TÚ" if team == 0 else "RIVAL"
+		elif format == State.SOLO:
+			# Sin parejas: el mío y el del rival que va primero.
+			board.title = "TÚ" if team == 0 else "LÍDER"
 		board.tint = TEAM_COLORS[team].lightened(0.5)
 		board.position = slate_pos[team]
 		board.scale = Vector2(SLATE_SCALE, SLATE_SCALE)
@@ -1176,9 +1467,16 @@ func _build_hud() -> void:
 		boards.append(board)
 
 	for p in 4:
-		var plate := _panel(hud, plate_rect[p], Color(0.08, 0.05, 0.03, 0.8), TEAM_COLORS[p % 2])
+		var plate := _panel(hud, plate_rect[p], Color(0.08, 0.05, 0.03, 0.8), _seat_color(p))
 		plate.pivot_offset = plate.size * 0.5
+		plate.visible = _seated(p)
 		plates.append(plate)
+		if not autoplay:
+			plate.mouse_filter = Control.MOUSE_FILTER_STOP
+			plate.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+			plate.gui_input.connect(func(ev: InputEvent) -> void:
+				if ev is InputEventMouseButton and ev.pressed and ev.button_index == MOUSE_BUTTON_LEFT:
+					_open_reactions(p))
 		var av: Avatar = Avatar.new()
 		var text_rect := Rect2(Vector2.ZERO, plate.size)
 		match p:
@@ -1200,8 +1498,16 @@ func _build_hud() -> void:
 		plate_labels.append(_label(plate, names[p], 22, CREAM, text_rect))
 	_refresh_avatars()
 
-	var menu_btn := _button(hud, "Menú", Color(0.45, 0.33, 0.22), Rect2(40.0 - Table.side, 164.0 - pad, 120, UI.TOUCH), 28)
+	var menu_btn := _button(hud, "Menú", UI.NEUTRAL, Rect2(40.0 - Table.side, 164.0 - pad, 120, UI.TOUCH), 28)
 	menu_btn.pressed.connect(_show_options)
+	if net == null and not autoplay and event != "daily":
+		# Pista: la jugada que haría la CPU difícil. En ranked y en el desafío no,
+		# para que no se gane pagando.
+		_hint_btn = _button(hud, "Pista", UI.BUY, Rect2(548.0 + Table.side, 846.0 + pad, 164, 70), 26)
+		_hint_btn.set_icon("bulb", 30)
+		_hint_btn.pressed.connect(_hint)
+		_hint_btn.visible = false
+	_build_reactions()
 	if net != null:
 		# Encima de la placa del rival de la derecha, donde no tapa la mesa.
 		var mid := play_rect.get_center().y
@@ -1255,6 +1561,7 @@ func _build_hud() -> void:
 	hud.add_child(confetti)
 
 	end_panel = _panel(hud, Rect2(40, 360, 640, 500), UI.SURFACE, GOLD)
+	UISkin.dress(end_panel)
 	end_panel.mouse_filter = Control.MOUSE_FILTER_STOP
 	end_panel.pivot_offset = end_panel.size * 0.5
 	_build_options()
@@ -1353,13 +1660,26 @@ func _button(parent: Node, text: String, color: Color, rect: Rect2, font_size: i
 
 
 func _refresh_score(animate: bool) -> void:
-	info_lbl.text = "Mano %d  ·  a %d puntos
-CPU: %s" % [hand_no, TARGET_SCORE, DIFF_NAMES[difficulty]]
+	var head := "Mano %d  ·  a %d puntos" % [hand_no, target]
+	if format != State.PAIRS:
+		head = "Mano %d  ·  a %d  ·  %s" % [hand_no, target, FORMAT_SHORT[format]]
+	info_lbl.text = "%s\n%s  ·  CPU %s" % [head, State.MODE_NAMES[mode], DIFF_NAMES[difficulty]]
+	match event:
+		"tournament":
+			info_lbl.text = "%s  ·  a %d\n%s" % [Tournament.cup().name, target,
+					Tournament.ROUND_NAMES[clampi(Tournament.round_no(), 0, 2)]]
+		"daily":
+			info_lbl.text = "Desafío del día\nMano %d  ·  a %d" % [hand_no, target]
 	for team in 2:
 		var board: ChalkBoard = boards[team]
-		if animate and scores[team] != board.shown:
+		var value: int = scores[team]
+		if team == 1 and format != State.PAIRS:
+			value = 0
+			for q in range(1, 4):
+				value = maxi(value, scores[q])
+		if animate and value != board.shown:
 			_play("chalk")
-		board.set_score(scores[team], animate)
+		board.set_score(value, animate)
 
 
 func _refresh_plates() -> void:
@@ -1378,7 +1698,7 @@ func _refresh_plates() -> void:
 func _refresh_avatars() -> void:
 	for p in 4:
 		var av: Avatar = avatars[p]
-		av.ring = TEAM_COLORS[p % 2].lightened(0.25)
+		av.ring = _seat_color(p).lightened(0.25)
 		if p == 0:
 			Settings.apply_avatar(av)
 		elif not seat_looks[p].is_empty():
@@ -1401,7 +1721,7 @@ func _set_active(p: int) -> void:
 		plate.scale = Vector2.ONE
 		plate.modulate = Color(1.5, 1.4, 1.0) if i == p else Color(1, 1, 1, 0.7)
 		# El aro dorado marca a quién le toca.
-		avatars[i].ring = GOLD if i == p else TEAM_COLORS[i % 2].lightened(0.25)
+		avatars[i].ring = GOLD if i == p else _seat_color(i).lightened(0.25)
 	if p < 0:
 		return
 	_plate_tw = create_tween().set_loops()
@@ -1429,7 +1749,7 @@ func _bubble(p: int, text: String, hold: float = 0.7) -> void:
 	var size := Vector2(minf(maxf(150.0, wide), 520.0), 58.0 if wide <= 520.0 else 96.0)
 	var center: Vector2 = bubble_pos[p]
 	center.x = clampf(center.x, size.x * 0.5 + 10.0 - Table.side, 710.0 + Table.side - size.x * 0.5)
-	var pn := _panel(hud, Rect2(center - size * 0.5, size), Color(0.98, 0.96, 0.9), TEAM_COLORS[p % 2])
+	var pn := _panel(hud, Rect2(center - size * 0.5, size), Color(0.98, 0.96, 0.9), _seat_color(p))
 	var lb := _label(pn, text, UI.CAPTION, Color(0.15, 0.1, 0.06), Rect2(10, 0, size.x - 20, size.y))
 	lb.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	pn.pivot_offset = size * 0.5
@@ -1445,19 +1765,32 @@ func _show_end(title: String, color: Color, lines: Array, buttons: Array) -> voi
 	for c in end_panel.get_children():
 		c.queue_free()
 	var w := end_panel.size.x
-	var tl := _label(end_panel, title, 44, color, Rect2(0, 16, w, 62))
-	tl.add_theme_color_override("font_outline_color", Color(0, 0, 0, 0.7))
-	tl.add_theme_constant_override("outline_size", 8)
+	var tl := _label(end_panel, title, 44, color, Rect2(0, 18, w, 62))
+	tl.add_theme_font_override("font", UISkin.serif())
+	tl.add_theme_color_override("font_outline_color", UISkin.TITLE_OUTLINE)
+	tl.add_theme_constant_override("outline_size", 10)
 	var y := 90.0
 	for ln in lines:
-		_label(end_panel, ln, UI.CAPTION, CREAM, Rect2(20, y, w - 40, 34))
-		y += 36.0
+		var lb := _label(end_panel, "", UI.CAPTION, CREAM, Rect2(20, y, w - 40, 34))
+		# Una frase larga (como la de la tranca) pasa a otra línea en vez de salirse
+		# del panel. El ajuste va antes que el texto: si no, la etiqueta crece a lo ancho.
+		lb.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		lb.text = ln
+		lb.size = Vector2(w - 40, 34)
+		var rows := maxi(lb.get_line_count(), 1)
+		lb.size.y = 34.0 * rows
+		y += 34.0 * rows + 2.0
+	# Si el texto ocupa más de lo previsto, el panel crece y sigue centrado.
+	var by := maxf(384.0, y + 12.0)
+	end_panel.size.y = by + UI.TOUCH + 28.0
+	end_panel.position.y = 610.0 - end_panel.size.y * 0.5
+	end_panel.pivot_offset = end_panel.size * 0.5
 	var bw := 270.0
 	var total := buttons.size() * bw + (buttons.size() - 1) * 24.0
 	var x := (w - total) * 0.5
 	for spec in buttons:
 		var action: String = spec[1]
-		var b := _button(end_panel, spec[0], spec[2], Rect2(x, 384, bw, UI.TOUCH), 28)
+		var b := _button(end_panel, spec[0], spec[2], Rect2(x, by, bw, UI.TOUCH), 28)
 		b.pressed.connect(func() -> void: _panel_done.emit(action))
 		x += bw + 24.0
 	overlay.visible = true
@@ -1479,11 +1812,12 @@ func _hide_end() -> void:
 ## Panel del botón "Menú": interruptores de sonido y de manos, seguir jugando o salir.
 ## La partida no se detiene mientras está abierto (en red no se puede).
 func _build_options() -> void:
-	opt_panel = _panel(hud, Rect2(60, 290, 600, 710), Color(0.13, 0.08, 0.05, 0.97), GOLD)
+	opt_panel = _panel(hud, Rect2(60, 240, 600, 810), Color(0.13, 0.08, 0.05, 0.97), GOLD)
 	opt_panel.mouse_filter = Control.MOUSE_FILTER_STOP
 	opt_panel.pivot_offset = opt_panel.size * 0.5
 	opt_panel.visible = false
-	_label(opt_panel, "Ajustes", 40, GOLD, Rect2(0, 18, 600, 56))
+	UISkin.dress(opt_panel)
+	UISkin.title(_label(opt_panel, "Ajustes", 40, GOLD, Rect2(0, 20, 600, 56)))
 	var y := 96.0
 	for key: String in SOUND_OPTIONS.keys():
 		var b := _button(opt_panel, "", Color.GRAY, Rect2(50, y, 500, UI.TOUCH_SMALL), 30)
@@ -1492,11 +1826,22 @@ func _build_options() -> void:
 		y += 96.0
 	_hands_btn = _button(opt_panel, "", Color.GRAY, Rect2(50, y, 500, UI.TOUCH_SMALL), 30)
 	_hands_btn.pressed.connect(_toggle_hands)
-	var resume := _button(opt_panel, "Seguir jugando", Color(0.25, 0.6, 0.3), Rect2(50, 492, 500, UI.TOUCH), UI.BUTTON)
+	var resume := _button(opt_panel, "Seguir jugando", UI.PRIMARY, Rect2(50, 588, 500, UI.TOUCH), UI.BUTTON)
 	resume.pressed.connect(_hide_options)
-	var leave := _button(opt_panel, "Salir al menú", Color(0.7, 0.2, 0.18), Rect2(125, 600, 350, UI.TOUCH_SMALL), 30)
-	leave.pressed.connect(func() -> void: exit_to_menu.emit())
+	var leave := _button(opt_panel, "Salir al menú", UI.DANGER, Rect2(125, 696, 350, UI.TOUCH_SMALL), 30)
+	leave.pressed.connect(leave_match)
 	_refresh_options()
+
+
+## Salir a mitad de partida. En el torneo cuenta como perderla (si no,
+## bastaría con salir al ir perdiendo); el desafío ya gastó su intento. El
+## ranked es en línea: allí lo cuenta el servidor (ver net.gd, _ranked_finish).
+func leave_match() -> void:
+	if net == null and not _event_reported and event == "tournament" and state != null:
+		_event_reported = true
+		Tournament.forfeit()
+		Stats.match_done(false, 0)
+	exit_to_menu.emit()
 
 
 func _refresh_options() -> void:
@@ -1557,3 +1902,219 @@ func _play(id: String, pitch: float = 1.0) -> void:
 
 func _wait(seconds: float) -> void:
 	await get_tree().create_timer(seconds).timeout
+
+
+# ------------------------------------------------------- eventos (torneo, ranked, desafío)
+
+## Apunta el resultado del evento y devuelve la línea que lo resume.
+func _event_result(won: bool) -> String:
+	if _event_reported:
+		return ""
+	_event_reported = true
+	match event:
+		"tournament":
+			var r := Tournament.report(won)
+			if r.champion:
+				_show_banner("¡Campeón!  +%d monedas  +%d gemas" % [r.prize, r.gems], GOLD)
+				return "¡Campeón de la %s!  +%d monedas  +%d gemas" % [Tournament.cup().name, r.prize, r.gems]
+			if r.out:
+				return "Eliminado en %s.%s" % [Tournament.ROUND_NAMES[r.round].to_lower(),
+						"  +%d monedas" % r.prize if r.prize > 0 else ""]
+			return "¡Pasas a %s!" % Tournament.ROUND_NAMES[r.round + 1].to_lower()
+		"daily":
+			if won:
+				var coins := Daily.complete()
+				if coins > 0:
+					return "¡Desafío superado!  +%d monedas  +%d gemas" % [coins, Daily.GEMS]
+				return "¡Desafío superado!"
+			return "Desafío no superado: otro intento viendo un anuncio."
+		"tutorial":
+			var first: bool = Settings.rules.tutorial != 1
+			Settings.rules.tutorial = 1
+			Settings.save()
+			if first:
+				Wallet.add_coins(TUTORIAL_REWARD)
+				return "¡Partida guiada completada!  +%d monedas" % TUTORIAL_REWARD
+			return "¡Partida guiada completada!"
+	return ""
+
+
+# ------------------------------------------------------------------ pista
+
+func _show_hint_button(on: bool) -> void:
+	if _hint_btn == null:
+		return
+	_hint_btn.visible = on
+	_hint_btn.text = "Pista" if Wallet.coins() < Wallet.HINT_COST else "Pista %d" % Wallet.HINT_COST
+	if on:
+		_hint_btn.set_icon("video" if Wallet.coins() < Wallet.HINT_COST else "bulb", 30)
+
+
+## Cuesta HINT_COST monedas o, si no alcanzan, un anuncio.
+func _hint() -> void:
+	if not _awaiting:
+		return
+	if Wallet.coins() >= Wallet.HINT_COST:
+		Wallet.add_coins(-Wallet.HINT_COST)
+		_give_hint()
+		return
+	var ads := Ads.get_ads()
+	if ads != null:
+		ads.show_rewarded(_give_hint)
+
+
+## Calcula la jugada de la CPU difícil para mí y la marca: la ficha brilla y
+## aparece la sombra en el extremo donde va.
+func _give_hint() -> void:
+	if not _awaiting:
+		return
+	_hint_btn.disabled = true
+	var st: State = state.clone()
+	var box := [-1]
+	var seed_value := rng.randi()
+	if OS.has_feature("web"):
+		box[0] = AI.choose(st, 0, AI.HARD, seed_value)
+	else:
+		var task := WorkerThreadPool.add_task(func() -> void: box[0] = AI.choose(st, 0, AI.HARD, seed_value))
+		while not WorkerThreadPool.is_task_completed(task):
+			await get_tree().process_frame
+		WorkerThreadPool.wait_for_task_completion(task)
+	_hint_btn.disabled = false
+	if not _awaiting or box[0] < 0:
+		return
+	var code: int = box[0] >> 1
+	for t: Tile in hand_tiles[0]:
+		t.tween_marks(1.0 if t.code == code else 0.0, 0.0 if t.code == code else 1.0)
+	_show_ghosts(code, [box[0] & 1])
+	_bubble(0, "Juega el %d/%d" % [State.hi(code), State.lo(code)], 1.6)
+	_play("point")
+
+
+# ------------------------------------------------------------- reacciones
+
+func _vibrate(ms: int) -> void:
+	if Settings.audio.get("vibrate", 1) != 0 and OS.has_feature("mobile"):
+		Input.vibrate_handheld(ms)
+
+
+## Fila de emojis que sale al tocar la placa de un jugador.
+func _build_reactions() -> void:
+	_reactions = _panel(hud, Rect2(110, 560, 500, 104), UI.SURFACE, GOLD)
+	UISkin.dress(_reactions)
+	_reactions.mouse_filter = Control.MOUSE_FILTER_STOP
+	_reactions.visible = false
+	for i in REACTIONS.size():
+		var b := Button.new()
+		b.flat = true
+		b.focus_mode = Control.FOCUS_NONE
+		b.icon = Chat.EMOJIS[REACTIONS[i]]
+		b.expand_icon = true
+		b.position = Vector2(18 + i * 78, 16)
+		b.size = Vector2(72, 72)
+		b.mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
+		_reactions.add_child(b)
+		b.pressed.connect(_react.bind(i))
+
+
+func _open_reactions(p: int) -> void:
+	if _reactions.visible and _reactions.get_meta("to", -1) == p:
+		_reactions.visible = false
+		return
+	_reactions.set_meta("to", p)
+	_reactions.position.y = clampf(bubble_pos[p].y - 52.0, 300.0, 860.0)
+	_reactions.visible = true
+	_reactions.scale = Vector2(0.7, 0.7)
+	_reactions.pivot_offset = _reactions.size * 0.5
+	create_tween().tween_property(_reactions, "scale", Vector2.ONE, 0.2).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	_play("click")
+
+
+func _react(i: int) -> void:
+	var to: int = _reactions.get_meta("to", 0)
+	_reactions.visible = false
+	var e: int = REACTIONS[i]
+	if net != null:
+		# En red va por el chat: todos ven el emoji junto a mi avatar.
+		net.chat(Chat.EMOJI, str(e))
+		return
+	_throw_emoji(0, to, e)
+	if to != 0 and rng.randf() < 0.6:
+		# La CPU contesta a veces.
+		get_tree().create_timer(rng.randf_range(1.2, 2.0)).timeout.connect(func() -> void:
+			if is_inside_tree():
+				var back: Array = CPU_HAPPY if e in CPU_HAPPY else CPU_SAD
+				_throw_emoji(to, 0, back[rng.randi() % back.size()]))
+
+
+## Emoji que vuela de la placa de `from` a la de `to` y explota allí.
+func _throw_emoji(from: int, to: int, e: int) -> void:
+	var tex: Texture2D = Chat.EMOJIS[e]
+	if from == to:
+		_emoji_pop(to, tex)
+		return
+	var img := TextureRect.new()
+	img.texture = tex
+	img.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+	img.size = Vector2(80, 80)
+	img.pivot_offset = img.size * 0.5
+	img.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	img.position = plate_rect[from].get_center() - img.size * 0.5
+	hud.add_child(img)
+	var tw := img.create_tween().set_parallel(true)
+	tw.tween_property(img, "position", bubble_pos[to] - img.size * 0.5, 0.5).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.tween_property(img, "rotation", TAU, 0.5)
+	tw.chain().tween_callback(func() -> void:
+		img.queue_free()
+		_emoji_pop(to, tex)
+		_play("tick", 1.4))
+
+
+## La CPU reacciona a veces cuando alguien domina, hace capicúa o tranca.
+func _cpu_react(res: Dictionary) -> void:
+	for p in range(1, 4):
+		if not _seated(p) or rng.randf() > 0.3:
+			continue
+		var happy: bool = (res.team == p % 2) if format == State.PAIRS else (res.winner == p)
+		var pool: Array = CPU_HAPPY if happy else CPU_SAD
+		var e: int = pool[rng.randi() % pool.size()]
+		get_tree().create_timer(rng.randf_range(0.4, 1.4)).timeout.connect(func() -> void:
+			if is_inside_tree():
+				_emoji_pop(p, Chat.EMOJIS[e]))
+
+
+# ------------------------------------------------------------ partida guiada
+
+## Muestra un consejo de la partida guiada (una sola vez cada uno) y espera a
+## que se pulse "Entendido". Fuera de la partida guiada no hace nada.
+func _coach(key: String, text: String) -> void:
+	if event != "tutorial" or autoplay or _coached.has(key):
+		return
+	_coached[key] = true
+	if _coach_panel == null:
+		_coach_panel = _panel(hud, Rect2(50, 360, 620, 330), UI.SURFACE, GOLD)
+		UISkin.dress(_coach_panel)
+		_coach_panel.mouse_filter = Control.MOUSE_FILTER_STOP
+		_coach_panel.pivot_offset = _coach_panel.size * 0.5
+		var head := _label(_coach_panel, "Partida guiada", 34, GOLD, Rect2(0, 16, 620, 50))
+		UISkin.title(head)
+		_coach_text = _label(_coach_panel, "", UI.BODY - 2, CREAM, Rect2(36, 74, 548, 150))
+		_coach_text.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		_coach_ok = _button(_coach_panel, "Entendido", UI.PRIMARY, Rect2(180, 232, 260, 76), UI.BUTTON - 2)
+	_coach_text.text = text
+	_coach_text.size = Vector2(548, 150)
+	_coach_panel.visible = true
+	_coach_panel.scale = Vector2(0.7, 0.7)
+	create_tween().tween_property(_coach_panel, "scale", Vector2.ONE, 0.3).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	await _coach_ok.pressed
+	_coach_panel.visible = false
+
+
+## Alguna jugada posible casa por los dos extremos (con extremos distintos).
+func _two_sided(moves: Array) -> bool:
+	var seen := {}
+	for mv: int in moves:
+		var code := mv >> 1
+		if seen.has(code):
+			return true
+		seen[code] = true
+	return false

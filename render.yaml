@@ -8,6 +8,13 @@ services:
     plan: free
     dockerfilePath: ./Dockerfile
     autoDeploy: true
+    # Cuentas y ranked (ver servidor/SUPABASE.md). Secretas: se ponen a mano
+    # en Render, nunca en el repositorio.
+    envVars:
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_KEY
+        sync: false
 
   # Versión web del juego: los archivos ya exportados de la carpeta web/.
   # Es un sitio estático: gratis y no se duerme.

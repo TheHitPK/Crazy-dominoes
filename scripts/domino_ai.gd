@@ -7,7 +7,8 @@ extends RefCounted
 ## fichas ocultas de forma coherente con eso muchas veces y simula cada mano hasta
 ## el final (Monte Carlo) para quedarse con la jugada que más puntos da a su pareja.
 ##
-## La IA nunca mira las manos ajenas: solo usa el conjunto de fichas que no ha visto.
+## La IA nunca mira las manos ajenas ni el pozo: solo usa el conjunto de fichas
+## que no ha visto. Sin parejas (state.format), "mi pareja" es solo yo.
 
 const State = preload("res://scripts/domino_state.gd")
 
@@ -51,8 +52,8 @@ static func _best_heuristic(state: State, p: int, moves: Array, rng: RandomNumbe
 
 static func _score(state: State, p: int, m: int, smart: bool) -> float:
 	var t := m >> 1
-	var a := t >> 3
-	var b := t & 7
+	var a := State.hi(t)
+	var b := State.lo(t)
 	var nl := state.left
 	var nr := state.right
 	if nl < 0:
@@ -70,12 +71,24 @@ static func _score(state: State, p: int, m: int, smart: bool) -> float:
 	for o in state.hands[p]:
 		if o == t:
 			continue
-		var oa: int = o >> 3
-		var ob: int = o & 7
+		var oa: int = State.hi(o)
+		var ob: int = State.lo(o)
 		if oa == nl or ob == nl or oa == nr or ob == nr:
 			keep += 1
 	s += 2.0 * keep
-	if smart:
+	if state.mode == State.FIVES:
+		# Cincos: apuntarse ya los extremos múltiplo de 5 vale mucho.
+		var sum := _ends_after(state, m, a, b, nl, nr)
+		if sum > 0 and sum % 5 == 0:
+			s += 1.5 * sum
+	if smart and state.format != State.PAIRS:
+		# Todos son rivales: conviene dejar números que alguno ya no tiene.
+		for q in 4:
+			if q != p and state.seated(q):
+				for e in [nl, nr]:
+					if state.voids[q][e]:
+						s += 4.0
+	elif smart:
 		var nxt := (p + 1) % 4
 		var mate := (p + 2) % 4
 		var prev := (p + 3) % 4
@@ -89,8 +102,21 @@ static func _score(state: State, p: int, m: int, smart: bool) -> float:
 	return s
 
 
+## Suma de los extremos tras la jugada `m` (como State.ends_sum), sin clonar.
+static func _ends_after(state: State, m: int, a: int, b: int, nl: int, nr: int) -> int:
+	if state.left < 0:
+		return a + b
+	var ld := state.left_dbl
+	var rd := state.right_dbl
+	if (m & 1) == 0:
+		ld = a == b
+	else:
+		rd = a == b
+	return nl * (2 if ld else 1) + nr * (2 if rd else 1)
+
+
 static func _monte_carlo(state: State, p: int, moves: Array, rng: RandomNumberGenerator) -> int:
-	var team := p % 2
+	var team := state.team_of(p)
 	var totals: Array = []
 	totals.resize(moves.size())
 	totals.fill(0.0)
@@ -98,6 +124,9 @@ static func _monte_carlo(state: State, p: int, moves: Array, rng: RandomNumberGe
 	for q in 4:
 		if q != p:
 			pool.append_array(state.hands[q])
+	# Las fichas del pozo y las dormidas tampoco las ve: son parte de lo oculto.
+	pool.append_array(state.pool)
+	pool.append_array(state.sleeping)
 	var worlds := 0
 	var t0 := Time.get_ticks_msec()
 	while worlds < MAX_WORLDS and Time.get_ticks_msec() - t0 < think_ms:
@@ -117,33 +146,41 @@ static func _monte_carlo(state: State, p: int, moves: Array, rng: RandomNumberGe
 	return best
 
 
-## Reparte las fichas ocultas entre los otros tres jugadores respetando lo que
-## se sabe de sus pases.
+## Reparte las fichas ocultas entre los demás jugadores (y el pozo y las
+## dormidas, que se tratan como dueños, POOL y SLEEP) respetando lo que se
+## sabe de sus pases.
+const POOL := 4
+const SLEEP := 5
+
 static func _sample_world(state: State, p: int, pool: Array, rng: RandomNumberGenerator) -> State:
 	var w: State = state.clone()
 	var others: Array = []
 	for q in 4:
-		if q != p:
+		if q != p and state.seated(q):
 			others.append(q)
+	if not state.pool.is_empty():
+		others.append(POOL)
+	if not state.sleeping.is_empty():
+		others.append(SLEEP)
 	for attempt in 25:
 		var tiles: Array = pool.duplicate()
 		State.shuffle(tiles, rng)
 		# Primero las fichas con menos dueños posibles.
-		var buckets: Array = [[], [], [], []]
+		var buckets: Array = [[], [], [], [], [], []]
 		for t in tiles:
 			buckets[_eligible(state, others, t).size()].append(t)
 		var assign := {}
 		for q in others:
 			assign[q] = []
 		var ok := true
-		for n in [0, 1, 2, 3]:
+		for n in buckets.size():
 			for t in buckets[n]:
 				var cands: Array = []
 				for q in _eligible(state, others, t):
-					if assign[q].size() < state.hands[q].size():
-						# Peso proporcional al hueco libre de cada mano.
-						for r in state.hands[q].size() - assign[q].size():
-							cands.append(q)
+					var room: int = _room(state, q) - assign[q].size()
+					# Peso proporcional al hueco libre de cada mano.
+					for r in room:
+						cands.append(q)
 				if cands.is_empty():
 					ok = false
 					break
@@ -152,34 +189,54 @@ static func _sample_world(state: State, p: int, pool: Array, rng: RandomNumberGe
 				break
 		if ok:
 			for q in others:
-				w.hands[q] = assign[q]
+				_give(w, q, assign[q])
 			return w
 	# Sin reparto coherente tras varios intentos: reparto libre.
 	var free: Array = pool.duplicate()
 	State.shuffle(free, rng)
 	var at := 0
 	for q in others:
-		var n: int = state.hands[q].size()
-		w.hands[q] = free.slice(at, at + n)
+		var n: int = _room(state, q)
+		_give(w, q, free.slice(at, at + n))
 		at += n
 	return w
+
+
+static func _room(state: State, q: int) -> int:
+	if q == POOL:
+		return state.pool.size()
+	if q == SLEEP:
+		return state.sleeping.size()
+	return state.hands[q].size()
+
+
+static func _give(w: State, q: int, tiles: Array) -> void:
+	if q == POOL:
+		w.pool = tiles
+	elif q == SLEEP:
+		w.sleeping = tiles
+	else:
+		w.hands[q] = tiles
 
 
 static func _eligible(state: State, others: Array, t: int) -> Array:
 	var out: Array = []
 	for q in others:
-		if not state.voids[q][t >> 3] and not state.voids[q][t & 7]:
+		if q == POOL or q == SLEEP or (not state.voids[q][State.hi(t)] and not state.voids[q][State.lo(t)]):
 			out.append(q)
 	return out
 
 
 static func _rollout(s: State, team: int, rng: RandomNumberGenerator) -> float:
 	var guard := 0
-	while not s.is_over() and guard < 160:
+	while not s.is_over() and guard < 260:
 		guard += 1
 		var moves: Array = s.legal_moves(s.turn)
 		if moves.is_empty():
-			s.apply_pass()
+			if s.can_draw():
+				s.draw()
+			else:
+				s.apply_pass()
 			continue
 		s.apply_move(_best_heuristic(s, s.turn, moves, rng, false, 5.0))
 	return s.score_for(team)

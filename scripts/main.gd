@@ -8,11 +8,27 @@ extends Node
 ## Argumentos de depuración (después de `--`):
 ##   --auto          empieza una partida en modo demostración (la CPU juega por ti)
 ##   --play          salta el menú y empieza una partida normal
+##   --intro         muestra la entrada (rayo y logos) aunque haya otros argumentos;
+##                   sin argumentos sale siempre
 ##   --diff=N        dificultad 0, 1 o 2 para --auto y --play
+##   --mode=N        modo de juego 0, 1 o 2 (State.MODE_NAMES); no se guarda
+##   --target=N      puntos para ganar (50, 100, 150 o 200); no se guarda
+##   --format=N      0 parejas, 1 todos contra todos, 2 uno contra uno (solo contra la CPU)
 ##   --customize     abre el menú con el panel de personalización
+##   --cpu-panel     abre el menú con la tarjeta "Prepara tu partida" (contra la CPU)
+##   --panel=CLAVE   abre el menú con un panel de la barra de abajo (shop, tournament,
+##                   ranked, daily, stats)
+##   --event=TIPO    salta el menú y juega una partida de torneo, desafío, rápida
+##                   o guiada (tournament, daily, quick, tutorial); el
+##                   torneo tiene que estar empezado
+##   --nine          con --play o --auto, juega con doble nueve
+##   --coins=N       fija el saldo de monedas (se guarda)
+##   --paid          con --play o --auto, la partida cobra y paga como una mesa del menú
 ##   --options       con --play o --auto, abre el panel de ajustes de la partida
 ##   --shuffle=N     con --play o --auto, fuerza la forma de revolver N (0..4)
 ##   --online        abre directamente la pantalla "Jugar con amigos"
+##   --ranked        abre directamente la pantalla del ranked en línea
+##   --server-addr=D usa la dirección D en lugar del servidor de Render (pruebas)
 ##   --square        fuerza la mesa cuadrada de la web de escritorio
 ##   --look=k:v,...  fuerza ajustes de aspecto, p. ej. --look=tile_style:1,hand_style:2
 ##   --speed=X       multiplica la velocidad del juego
@@ -27,7 +43,10 @@ extends Node
 ##   --net-name=NOMBRE     nombre del jugador de prueba
 ##   --net-token=CLAVE     clave del jugador (la misma clave recupera su asiento al volver)
 ##   --net-public          el anfitrión de prueba hace pública su sala
+##   --net-mode=N          el anfitrión de prueba elige el modo N (0..2)
+##   --net-target=N        el anfitrión de prueba elige la meta de puntos
 ##   --net-browse=DIR      pide la lista de salas públicas y entra en la primera
+##   --net-ranked=DIR      entra en la cola de ranked del servidor DIR y juega solo
 ##   --net-say=TEXTO       al empezar la partida manda TEXTO y el emoji 0 al chat (y muestra lo que llega)
 ##   --chat                abre el chat en la sala y, ya en la partida, a los 7 s
 
@@ -36,11 +55,21 @@ const Game = preload("res://scripts/game.gd")
 const Online = preload("res://scripts/online.gd")
 const Net = preload("res://scripts/net.gd")
 const AI = preload("res://scripts/domino_ai.gd")
+const State = preload("res://scripts/domino_state.gd")
 const Sfx = preload("res://scripts/sfx.gd")
 const Settings = preload("res://scripts/settings.gd")
+const Wallet = preload("res://scripts/wallet.gd")
 const Table = preload("res://scripts/table.gd")
+const Stats = preload("res://scripts/stats.gd")
+const Tournament = preload("res://scripts/tournament.gd")
+const Daily = preload("res://scripts/daily_challenge.gd")
+const Ranked = preload("res://scripts/ranked.gd")
+const Ads = preload("res://scripts/ads.gd")
+const Intro = preload("res://scripts/intro.gd")
 
 const BASE_SIZE := Vector2(720, 1280)
+## Pruebas: --event con --auto (la CPU juega por ti la partida del evento).
+var _event_auto := false
 ## Cuánto crece la mesa por cada lado en la web de escritorio: 720 + 2·280 = 1280, cuadrada.
 const SQUARE_SIDE := 280.0
 
@@ -93,32 +122,83 @@ func _ready() -> void:
 	net.closed.connect(_on_net_closed)
 
 	Settings.load_settings()
+	Wallet.load_wallet()
+	Wallet.sanitize_look()
+	Stats.load_stats()
+	Tournament.load_tournament()
+	Daily.load_daily()
+	# Anuncios (modo prueba hasta instalar el plugin de AdMob). Solo con pantalla.
+	var ads := Ads.new()
+	ads.name = "Ads"
+	add_child(ads)
+	if args.has("--coins"):
+		# Pruebas: fija el saldo (sí se guarda).
+		Wallet.data.coins = int(args["--coins"])
+		Wallet.save()
 	if args.has("--look"):
 		# --look=clave:valor,clave:valor  (no se guarda en disco)
 		for pair in str(args["--look"]).split(","):
 			Settings.data[pair.get_slice(":", 0)] = int(pair.get_slice(":", 1))
+	if args.has("--mode"):
+		Settings.rules.mode = clampi(int(args["--mode"]), 0, State.MODE_NAMES.size() - 1)
+	if args.has("--target"):
+		Settings.rules.target = int(args["--target"])
+	if args.has("--server-addr"):
+		Online.server_override = str(args["--server-addr"])
+	if args.has("--nine"):
+		Settings.rules.nine = 1
+	if args.has("--format"):
+		Settings.rules.format = clampi(int(args["--format"]), 0, State.FORMAT_NAMES.size() - 1)
 	var diff := clampi(int(args.get("--diff", "2")), 0, 2)
 
-	if args.has("--net-host") or args.has("--net-create") or args.has("--net-join") or args.has("--net-browse"):
+	if args.has("--net-host") or args.has("--net-create") or args.has("--net-join") or args.has("--net-browse") \
+			or args.has("--net-ranked"):
 		# Con --online se ve la sala (para capturas); no combinar con una partida de prueba.
 		_switch(_make_online.bind("") if args.has("--online") else _make_menu)
 		_net_test(args)
 	elif args.has("--auto") or args.has("--play"):
-		_switch(_make_game.bind(diff, args.has("--auto")))
+		if args.has("--paid"):
+			Wallet.pay_entry(diff, Settings.rules.bet)
+		_switch(_make_game.bind(diff, args.has("--auto"), args.has("--paid")))
 		if args.has("--shuffle"):
 			current.force_shuffle = int(args["--shuffle"])
 		if args.has("--options"):
 			current.call_deferred("_show_options")
-	elif args.has("--online"):
-		_switch(_make_online.bind(""))
+	elif args.has("--online") or args.has("--ranked"):
+		_switch(_make_online.bind("", args.has("--ranked")))
+	elif args.has("--event"):
+		_event_auto = args.has("--auto")
+		_switch(_make_event_game.bind(str(args["--event"])))
+	elif args.is_empty() or args.has("--intro"):
+		# Arranque normal: logo del estudio con el rayo y logo del juego; el menú
+		# entra cuando termina (ver intro.gd).
+		_play_intro()
 	else:
-		_switch(_make_menu)
+		_switch(_make_menu.bind(str(args.get("--panel", ""))))
 		if args.has("--customize"):
 			current.open_customize()
+		if args.has("--cpu-panel"):
+			current._open_setup(false)
 	if args.has("--shot"):
 		await get_tree().create_timer(float(args.get("--shot-delay", "3"))).timeout
 		get_viewport().get_texture().get_image().save_png(args["--shot"])
 		get_tree().quit()
+
+
+## Entrada de la app. Va en su propia capa por encima del fundido: el menú se
+## crea debajo al terminar y la entrada se desvanece encima de él.
+func _play_intro() -> void:
+	var layer := CanvasLayer.new()
+	layer.layer = 60
+	add_child(layer)
+	var intro: Intro = Intro.new()
+	intro.sfx = sfx
+	layer.add_child(intro)
+	await intro.finished
+	_switch(_make_menu)
+	var tw := intro.create_tween()
+	tw.tween_property(intro, "modulate:a", 0.0, 0.4)
+	tw.tween_callback(layer.queue_free)
 
 
 ## El diseño base es 720x1280 (vertical). En pantallas más altas (casi todos los
@@ -156,13 +236,17 @@ func _center_content() -> float:
 func _notification(what: int) -> void:
 	# Botón "atrás" de Android: de la partida o la sala al menú, y del menú fuera.
 	if what == NOTIFICATION_WM_GO_BACK_REQUEST:
-		if current is Game or current is Online:
+		if current is Game and current.net == null:
+			# Contra la CPU: como "Salir al menú" (en el torneo cuenta como derrota).
+			current.leave_match()
+		elif current is Game or current is Online:
 			_to_menu()
 		else:
 			get_tree().quit()
 
 
 func _to_menu() -> void:
+	net.ranked_mode = false
 	net.leave()
 	_switch(_make_menu)
 
@@ -173,30 +257,83 @@ func _on_net_closed() -> void:
 		_switch(_make_online.bind("Se perdió la conexión con la sala."))
 
 
-func _make_menu() -> Node:
+func _make_menu(panel: String = "") -> Node:
 	var m: Menu = Menu.new()
 	m.sfx = sfx
-	m.start_game.connect(func(d: int) -> void: _switch(_make_game.bind(d, false)))
+	m.open_panel = panel
+	m.start_event.connect(func(kind: String) -> void: _switch(_make_event_game.bind(kind)))
+	m.open_ranked.connect(func() -> void: _switch(_make_online.bind("", true)))
+	# El menú ya cobró la entrada de la mesa: la partida paga el premio al ganar.
+	m.start_game.connect(func(d: int) -> void: _switch(_make_game.bind(d, false, true)))
 	m.open_online.connect(func() -> void: _switch(_make_online.bind("")))
 	return m
 
 
-func _make_online(notice: String) -> Node:
+func _make_online(notice: String, ranked: bool = false) -> Node:
 	var o: Online = Online.new()
 	o.sfx = sfx
 	o.net = net
 	o.notice = notice
+	o.start_ranked = ranked
 	o.back.connect(_to_menu)
 	o.start_game.connect(func() -> void: _switch(_make_net_game.bind(false)))
 	return o
 
 
-func _make_game(difficulty: int, autoplay: bool) -> Node:
+func _make_game(difficulty: int, autoplay: bool, paid: bool = false) -> Node:
 	var g: Game = Game.new()
 	g.sfx = sfx
 	g.difficulty = difficulty
+	g.paid = paid
+	g.bet = Settings.rules.bet
+	g.mode = clampi(Settings.rules.mode, 0, State.MODE_NAMES.size() - 1)
+	g.format = clampi(Settings.rules.format, 0, State.FORMAT_NAMES.size() - 1)
+	g.double_nine = Settings.rules.nine == 1
+	g.target = Settings.rules.target if State.TARGETS.has(Settings.rules.target) else State.DEFAULT_TARGET
 	g.autoplay = autoplay
 	g.exit_to_menu.connect(func() -> void: _switch(_make_menu))
+	return g
+
+
+## Partida de torneo, desafío del día, rápida o guiada: reglas fijas según el
+## evento (ver tournament.gd y daily_challenge.gd). Al terminar vuelve al
+## menú con el panel del evento abierto.
+func _make_event_game(kind: String) -> Node:
+	var g: Game = Game.new()
+	g.sfx = sfx
+	g.event = kind
+	g.autoplay = _event_auto
+	match kind:
+		"tournament":
+			g.format = State.DUEL
+			g.mode = State.CLASSIC
+			g.difficulty = Tournament.difficulty()
+			g.target = Tournament.target()
+			g.names = Game.DUEL_NAMES.duplicate()
+			g.names[2] = Tournament.opponent_name()
+		"daily":
+			g.format = State.PAIRS
+			g.mode = Daily.mode()
+			g.difficulty = Daily.DIFFICULTY
+			g.target = Daily.TARGET
+			g.deal_seed = Daily.seed_value()
+		"quick":
+			# Partida rápida: lo último elegido, sin apuesta y a 50, más deprisa.
+			g.format = clampi(Settings.rules.format, 0, State.FORMAT_NAMES.size() - 1)
+			g.mode = clampi(Settings.rules.mode, 0, State.MODE_NAMES.size() - 1)
+			g.difficulty = mini(Settings.rules.difficulty, Wallet.DIFF_LEVEL.size() - 1)
+			if Wallet.level() < Wallet.DIFF_LEVEL[g.difficulty]:
+				g.difficulty = 0
+			g.target = 50
+			g.double_nine = Settings.rules.nine == 1
+		"tutorial":
+			# Partida guiada: en parejas, clásico, CPU fácil y a 50.
+			g.format = State.PAIRS
+			g.mode = State.CLASSIC
+			g.difficulty = 0
+			g.target = 50
+	var back := func() -> void: _switch(_make_menu.bind(kind))
+	g.exit_to_menu.connect(back)
 	return g
 
 
@@ -207,7 +344,8 @@ func _make_net_game(autoplay: bool) -> Node:
 	g.net = net
 	g.autoplay = autoplay
 	g.exit_to_menu.connect(_to_menu)
-	g.back_to_room.connect(func() -> void: _switch(_make_online.bind("")))
+	# Tras una partida de ranked se vuelve a la pantalla del ranked.
+	g.back_to_room.connect(func() -> void: _switch(_make_online.bind("", net.ranked_mode)))
 	return g
 
 
@@ -248,6 +386,9 @@ func _net_test(args: Dictionary) -> void:
 		if args.has("--chat") and current is Online and not state.has("chat"):
 			state.chat = true
 			current.call_deferred("_open_chat")
+		if info.host and not info.started and info.has("mode") and not state.has("rules"):
+			state.rules = true
+			net.set_rules(int(args.get("--net-mode", "0")), int(args.get("--net-target", "100")))
 		if info.host and not info.started and not state.in_game and count >= humans:
 			net.send("sv_start"))
 	net.public_rooms.connect(func(list: Array) -> void:
@@ -267,8 +408,23 @@ func _net_test(args: Dictionary) -> void:
 			if args.has("--chat"):
 				get_tree().create_timer(7.0, true, false, true).timeout.connect(func() -> void: current._open_chat())
 			_switch(_make_net_game.bind(true)))
+	if args.has("--net-ranked"):
+		# El token del ranked tiene que ser largo (el servidor rechaza los cortos).
+		token = token.sha256_text().left(32)
+		net.ranked_profile.connect(func(rec: Dictionary) -> void:
+			print("[%s] ranked: %s (%d PR, %d partidas)" % [player, Ranked.rank_name(int(rec.pr)), int(rec.pr), int(rec.games)])
+			if not state.has("queued"):
+				state.queued = true
+				net.ranked_queue(true, Settings.my_look()))
+		net.ranked_queue_changed.connect(func(info: Dictionary) -> void:
+			if int(info.get("secs", 0)) % 5 == 0:
+				print("[%s] cola: %s" % [player, str(info)]))
+		net.ranked_result.connect(func(res: Dictionary) -> void:
+			print("[%s] resultado ranked: %s %+d PR -> %s" % [player, "gana" if res.won else "pierde", int(res.delta), res.rank]))
 	var connect_now := func() -> void:
-		if args.has("--net-host"):
+		if args.has("--net-ranked"):
+			net.ranked_connect(args["--net-ranked"], player, token)
+		elif args.has("--net-host"):
 			net.host_lan(player, Settings.my_look(), 0, token)
 		elif args.has("--net-create"):
 			net.create_remote(args["--net-create"], player, Settings.my_look(), 0, token, args.get("--net-code", "TEST"))
