@@ -1,14 +1,24 @@
-Música de fondo de las partidas
-===============================
+Música de fondo
+===============
 
-Todo lo que haya en esta carpeta suena de fondo durante las partidas, una pista
-tras otra en orden aleatorio. Con una sola pista, se repite.
+Hay tres carpetas, una por pantalla:
 
-Para poner tu música (jazz, gaita, lo que quieras), copia aquí los archivos:
-.mp3, .wav o .ogg en formato Vorbis. Si no quieres la pista que viene, bórrala.
+  audio/menu/    menú principal (y la pantalla de jugar en línea)
+  audio/music/   partidas normales
+  audio/event/   torneo y ranked (un jazz más movido)
 
-"jazz_de_la_casa.ogg" es una pista corta generada por código para que haya
-música desde el primer día. Es libre: no tiene derechos de nadie.
+Lo que haya en cada carpeta suena una pista tras otra en orden aleatorio. Con
+una sola pista, se repite sin corte.
+
+Para poner tu música (jazz, gaita, lo que quieras), copia los archivos en la
+carpeta que toque: .mp3, .wav o .ogg en formato Vorbis. Si no quieres una pista
+que viene, bórrala.
+
+Las pistas que vienen están generadas por código y son libres: no tienen
+derechos de nadie.
+- jazz_de_la_casa.ogg (partidas).
+- menu/menu_lounge.ogg y event/jazz_activo.ogg: tools/generar_musica.py.
+- thunder/trueno.ogg (el rayo de la entrada): tools/generar_trueno.py.
 
 OJO con los derechos: si vas a publicar el juego, la música tiene que ser tuya
 o tener licencia que permita usarla en una app. Las canciones comerciales

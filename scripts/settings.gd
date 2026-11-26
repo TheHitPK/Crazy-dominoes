@@ -12,8 +12,11 @@ const ACCENTS := [Color(0.85, 0.1, 0.22), Color(0.95, 0.4, 0.65), Color(0.55, 0.
 		Color(0.15, 0.45, 0.9), Color(0.1, 0.7, 0.6), Color(0.98, 0.8, 0.2),
 		Color(0.96, 0.96, 0.94), Color(0.12, 0.12, 0.14)]
 const HAND_NAMES := ["Natural", "Uñas largas pintadas", "Guantes"]
-const TILE_NAMES := ["Marfil clásico", "Madera", "Cerámica", "Ébano", "Puntos de colores", "Piedra rústica"]
-const TABLE_NAMES := ["Roble", "Nogal oscuro", "Pino claro", "Caoba", "Tapete verde", "Tablones rústicos"]
+## Fichas y mesas: mismo orden que Tile.STYLES, Table.STYLES y Wallet.PRICES.
+const TILE_NAMES := ["Marfil clásico", "Madera", "Cerámica", "Ébano", "Puntos de colores", "Piedra rústica",
+		"Mármol", "Caribe", "Rubí", "Oro", "Neón", "Catatumbo"]
+const TABLE_NAMES := ["Roble", "Nogal oscuro", "Pino claro", "Caoba", "Tapete verde", "Tablones rústicos",
+		"Tapete azul", "Tapete de casino", "Bambú", "Ébano y oro", "Mármol negro", "Noche Catatumbo"]
 const DRINK_NAMES := ["Refresco", "Cerveza", "Limonada", "Café", "Agua"]
 
 const SHOW_HANDS_NAMES := ["Ocultas", "Visibles"]
@@ -31,8 +34,15 @@ static var data := {"skin": 1, "hand_style": 0, "accent": 0, "tile_style": 0, "t
 ## "last_code", la última sala en línea, para volver a ella con un toque.
 static var profile := {"name": "", "server": "", "player_id": "", "last_code": ""}
 ## Sonido: 1 = activado, 0 = silenciado. "pass_voice" son los audios grabados
-## que suenan al pasar; "sfx", el resto de efectos; "music", la música de fondo.
-static var audio := {"pass_voice": 1, "sfx": 1, "music": 1}
+## que suenan al pasar; "sfx", el resto de efectos; "music", la música de fondo;
+## "vibrate", la vibración del teléfono al poner ficha y al dominar.
+static var audio := {"pass_voice": 1, "sfx": 1, "music": 1, "vibrate": 1}
+## Modo de juego (índice en State.MODE_NAMES) y puntos para ganar; en red los
+## elige el anfitrión de la sala. Contra la CPU, también la dificultad y la
+## apuesta (Wallet.BETS) de la última partida, para proponerlas otra vez.
+## "nine": 1 = doble nueve (solo contra la CPU). "tutorial": 1 = ya hizo la
+## partida guiada.
+static var rules := {"mode": 0, "target": 100, "difficulty": 0, "bet": 50, "format": 0, "nine": 0, "tutorial": 0}
 
 
 static func load_settings() -> void:
@@ -45,6 +55,8 @@ static func load_settings() -> void:
 		profile[key] = str(cfg.get_value("net", key, profile[key]))
 	for key in audio.keys():
 		audio[key] = int(cfg.get_value("audio", key, audio[key]))
+	for key in rules.keys():
+		rules[key] = int(cfg.get_value("rules", key, rules[key]))
 
 
 static func save() -> void:
@@ -55,6 +67,8 @@ static func save() -> void:
 		cfg.set_value("net", key, profile[key])
 	for key in audio.keys():
 		cfg.set_value("audio", key, audio[key])
+	for key in rules.keys():
+		cfg.set_value("rules", key, rules[key])
 	cfg.save(PATH)
 
 
@@ -67,6 +81,29 @@ static func player_token() -> String:
 		profile.player_id = Crypto.new().generate_random_bytes(16).hex_encode()
 		save()
 	return profile.player_id
+
+
+## Longitud máxima del nombre (el servidor también lo recorta: net.gd, _clean_name).
+const NAME_MAX := 12
+
+
+## Mi nombre en las salas y el ranked. Se cambia en el perfil (profile_panel.gd),
+## no al entrar en línea. La primera vez es "Jugador" con cuatro cifras, para
+## que en una sala no salgan cuatro "Jugador" iguales.
+static func player_name() -> String:
+	var n := str(profile.name).strip_edges()
+	if n == "":
+		n = "Jugador%d" % randi_range(1000, 9999)
+		set_player_name(n)
+	return n
+
+
+static func set_player_name(n: String) -> void:
+	n = n.strip_edges().left(NAME_MAX)
+	if n == "":
+		return
+	profile.name = n
+	save()
 
 
 ## Aspecto de mis manos, mi bebida y mi avatar, para que los demás jugadores me

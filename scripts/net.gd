@@ -29,15 +29,23 @@ signal chat_message(msg: Dictionary)
 signal mute_changed
 ## Nueva medida del retraso con el servidor, en ms (-1 = no responde).
 signal latency_changed(ms: int)
+## Ranked (ver la clase RankedNet): mi ficha, el estado de la cola, la tabla de
+## clasificación, el resultado de una partida y el premio de temporada cobrado.
+signal ranked_profile(rec: Dictionary)
+signal ranked_queue_changed(info: Dictionary)
+signal ranked_top(rows: Array, me: int)
+signal ranked_result(res: Dictionary)
+signal ranked_claimed(coins: int)
 
 const State = preload("res://scripts/domino_state.gd")
 const AI = preload("res://scripts/domino_ai.gd")
 const Avatar = preload("res://scripts/avatar.gd")
 const Chat = preload("res://scripts/chat.gd")
+const Ranked = preload("res://scripts/ranked.gd")
+const Cloud = preload("res://scripts/cloud.gd")
 
 const PORT := 8910
 const BEACON_PORT := 8911
-const TARGET_SCORE := 100
 const LAN_CODE := "WIFI"
 const NO_MOVE := -2
 ## Segundos que se insiste en conectar: poco en la wifi, mucho con un servidor
@@ -125,7 +133,87 @@ class Lobby extends Node:
 		net._got_rtt(sent_at)
 
 
+## Órdenes de los modos de juego y las metas de puntos. Van en otro nodo hijo
+## por la misma razón que Lobby: añadirlas a Lobby cambiaría los números de sus
+## órdenes. Ruta: /root/Main/Net/Modes. Un servidor anterior no tiene este nodo
+## e ignora estas órdenes; su sala se juega en clásico a 100.
+class Modes extends Node:
+	var net: Node
+
+	## Este cliente entiende los modos. Si alguien de la sala no lo dice, la
+	## partida se juega en clásico a 100 para que su versión cuente bien.
+	@rpc("any_peer", "call_remote", "reliable")
+	func sv_modes_hello() -> void:
+		net._modes_peers[multiplayer.get_remote_sender_id()] = true
+
+	@rpc("any_peer", "call_remote", "reliable")
+	func sv_rules(mode: int, target: int) -> void:
+		net._set_rules(multiplayer.get_remote_sender_id(), mode, target)
+
+
+## Órdenes del ranked en línea (cuentas, cola, clasificación). Otro nodo hijo
+## nuevo, por la misma razón que Lobby y Modes. Ruta: /root/Main/Net/Ranked.
+## Solo las atiende un servidor dedicado; un servidor viejo no tiene este nodo
+## y el cliente se queda esperando (la pantalla lo avisa pasado un rato).
+class RankedNet extends Node:
+	var net: Node
+
+	@rpc("any_peer", "call_remote", "reliable")
+	func sv_ranked_hello(token: String, player_name: String) -> void:
+		net._ranked_hello(multiplayer.get_remote_sender_id(), token, player_name)
+
+	@rpc("any_peer", "call_remote", "reliable")
+	func sv_ranked_queue(on: bool, look: Dictionary) -> void:
+		net._ranked_set_queue(multiplayer.get_remote_sender_id(), on, look)
+
+	@rpc("any_peer", "call_remote", "reliable")
+	func sv_ranked_top() -> void:
+		net._ranked_send_top(multiplayer.get_remote_sender_id())
+
+	@rpc("any_peer", "call_remote", "reliable")
+	func sv_ranked_claim() -> void:
+		net._ranked_claim(multiplayer.get_remote_sender_id())
+
+	@rpc("authority", "call_remote", "reliable")
+	func cl_ranked_profile(rec: Dictionary) -> void:
+		net.ranked_me = rec
+		net.ranked_profile.emit(rec)
+
+	@rpc("authority", "call_remote", "reliable")
+	func cl_ranked_queue(info: Dictionary) -> void:
+		net.ranked_queue_changed.emit(info)
+
+	@rpc("authority", "call_remote", "reliable")
+	func cl_ranked_top(rows: Array, me: int) -> void:
+		net.ranked_top.emit(rows, me)
+
+	@rpc("authority", "call_remote", "reliable")
+	func cl_ranked_result(res: Dictionary) -> void:
+		net.ranked_last = res
+		if res.has("profile"):
+			net.ranked_me = res.profile
+		net.ranked_result.emit(res)
+
+	@rpc("authority", "call_remote", "reliable")
+	func cl_ranked_claimed(coins: int) -> void:
+		net.ranked_claimed.emit(coins)
+
+
 var _lobby: Lobby
+var _modes: Modes
+var _ranked: RankedNet
+## Cliente: estoy en la pantalla de ranked (al acabar una partida se vuelve a
+## ella), mi ficha y el resultado de la última partida.
+var ranked_mode := false
+var ranked_me := {}
+var ranked_last := {}
+## Servidor: cuentas por conexión, cola de espera [{peer, since, look}] y almacén.
+var _accounts := {}
+var _queue: Array = []
+var _queue_timer := 0.0
+var _cloud: Cloud
+## Servidor: quién entiende los modos de juego.
+var _modes_peers := {}
 ## Chat: mensajes recibidos en esta sala (los últimos CHAT_KEEP), para verlos
 ## tanto en la sala como en la mesa.
 var chat_log: Array = []
@@ -146,6 +234,14 @@ func _ready() -> void:
 	_lobby.name = "Lobby"
 	_lobby.net = self
 	add_child(_lobby)
+	_modes = Modes.new()
+	_modes.name = "Modes"
+	_modes.net = self
+	add_child(_modes)
+	_ranked = RankedNet.new()
+	_ranked.name = "Ranked"
+	_ranked.net = self
+	add_child(_ranked)
 	_rng.randomize()
 	multiplayer.connected_to_server.connect(_connected)
 	multiplayer.connection_failed.connect(_connection_failed)
@@ -201,6 +297,14 @@ func _browsing() -> bool:
 	return online and not serving and room_info.is_empty()
 
 
+## El anfitrión elige el modo de juego (State.CLASSIC...) y la meta de puntos.
+func set_rules(mode: int, target: int) -> void:
+	if serving:
+		_set_rules(1, mode, target)
+	elif online:
+		_modes.sv_rules.rpc_id(1, mode, target)
+
+
 ## La sala en la que estoy pasa a ser pública (aparece en la lista) o privada (solo con código).
 func set_public(on: bool) -> void:
 	if serving:
@@ -219,6 +323,33 @@ func send(method: String, args: Array = []) -> void:
 		_local_call = false
 	elif online:
 		callv("rpc_id", [1, method] + args)
+
+
+## Ranked: conecta con el servidor (si hace falta) y pide mi ficha. La
+## respuesta llega por `ranked_profile`.
+func ranked_connect(address: String, player_name: String, token: String) -> void:
+	ranked_mode = true
+	var hello := func() -> void: _ranked.sv_ranked_hello.rpc_id(1, token, player_name)
+	if online and not serving:
+		hello.call()
+	else:
+		_connect_to(address, hello, REMOTE_PATIENCE)
+
+
+## Entra o sale de la cola de ranked. `look`: mi aspecto, para la mesa.
+func ranked_queue(on: bool, look: Dictionary) -> void:
+	if online and not serving:
+		_ranked.sv_ranked_queue.rpc_id(1, on, look)
+
+
+func ranked_request_top() -> void:
+	if online and not serving:
+		_ranked.sv_ranked_top.rpc_id(1)
+
+
+func ranked_claim() -> void:
+	if online and not serving:
+		_ranked.sv_ranked_claim.rpc_id(1)
 
 
 ## Sale de la sala y cierra la conexión (o el servidor, si era el anfitrión).
@@ -347,6 +478,7 @@ func cl_room(info: Dictionary) -> void:
 	if not _said_hello and not serving:
 		_said_hello = true
 		_lobby.sv_hello.rpc_id(1)
+		_modes.sv_modes_hello.rpc_id(1)
 	room_changed.emit(info)
 
 
@@ -364,6 +496,11 @@ func cl_event(ev: Dictionary) -> void:
 # ------------------------------------------------------------- red local (wifi)
 
 func _process(delta: float) -> void:
+	if dedicated and not _queue.is_empty():
+		_queue_timer -= delta
+		if _queue_timer <= 0.0:
+			_queue_timer = 1.0
+			_ranked_tick()
 	if online and not serving:
 		_ping_timer -= delta
 		if _ping_timer <= 0.0:
@@ -425,6 +562,10 @@ func _announce() -> void:
 ## Arranca un servidor dedicado (sin jugador local) para jugar a distancia.
 func serve_dedicated(port: int) -> bool:
 	dedicated = true
+	# Cuentas del ranked: Supabase o, sin sus variables de entorno, un archivo.
+	_cloud = Cloud.new()
+	_cloud.name = "Cloud"
+	add_child(_cloud)
 	var err := _start_server(port)
 	print("[servidor] ", "escuchando en el puerto %d" % port if err == OK else "no se pudo abrir el puerto %d" % port)
 	return err == OK
@@ -487,7 +628,8 @@ func _push_room(room: Dictionary) -> void:
 		var peer: int = room.seats[i].peer
 		if peer != 0:
 			_to(peer, "cl_room", [{"code": room.code, "difficulty": room.difficulty, "started": room.started,
-					"host": peer == room.host, "you": i, "seats": seats, "public": room.get("public", false)}])
+					"host": peer == room.host, "you": i, "seats": seats, "public": room.get("public", false),
+					"mode": room.mode, "target": room.target, "ranked": room.get("ranked", false)}])
 
 
 func _new_code() -> String:
@@ -538,7 +680,7 @@ func sv_create(player_name: String, look: Dictionary, difficulty: int, code_hint
 			"started": false, "dead": false, "state": null, "scores": [0, 0], "starter": -1,
 			"hand_no": 0, "pending": NO_MOVE, "ready": {}, "history": [],
 			# Privada por defecto: solo se entra con el código.
-			"public": false}
+			"public": false, "mode": State.CLASSIC, "target": State.DEFAULT_TARGET}
 	rooms[code] = room
 	seats[0] = {"peer": id, "name": _clean_name(player_name), "look": _clean_look(look), "token": token}
 	peer_room[id] = code
@@ -595,7 +737,8 @@ func _rejoin(room: Dictionary, seat_index: int, id: int) -> void:
 			"counts": counts, "history": room.history.duplicate(true),
 			"turn": -1 if st == null else st.turn, "over": st == null or st.is_over(),
 			"starter": room.starter, "scores": room.scores.duplicate(), "hand_no": room.hand_no,
-			"seats": _seats_public(room), "difficulty": room.difficulty}])
+			"seats": _seats_public(room), "difficulty": room.difficulty, "mode": room.mode,
+			"target": room.target}])
 	for other: Dictionary in room.seats:
 		if other.peer != 0 and other.peer != id:
 			_to(other.peer, "cl_event", [{"type": "back", "seat": seat_index, "name": seat.name}])
@@ -630,9 +773,31 @@ func sv_start() -> void:
 	var room := _room_of(_sender())
 	if room.is_empty() or room.host != _sender() or room.started:
 		return
+	if not _all_know_modes(room):
+		# Alguien tiene una versión sin modos: contaría los puntos a su manera.
+		room.mode = State.CLASSIC
+		room.target = State.DEFAULT_TARGET
 	room.started = true
 	_push_room(room)
 	_run_match(room)
+
+
+func _set_rules(peer: int, mode: int, target: int) -> void:
+	var room := _room_of(peer)
+	if room.is_empty() or room.host != peer or room.started or not State.TARGETS.has(target):
+		return
+	# Cincos (y lo que venga) es solo contra la CPU: las APK viejas no lo conocen.
+	room.mode = clampi(mode, 0, State.NET_MODES - 1)
+	room.target = target
+	_push_room(room)
+
+
+func _all_know_modes(room: Dictionary) -> bool:
+	for seat: Dictionary in room.seats:
+		# El anfitrión de la wifi es este mismo teléfono.
+		if seat.peer != 0 and not (seat.peer == 1 and not dedicated) and not _modes_peers.has(seat.peer):
+			return false
+	return true
 
 
 ## Jugada del jugador en turno; -1 significa pasar.
@@ -672,7 +837,8 @@ func _send_public_rooms(peer: int) -> void:
 				if seat.peer == room.host:
 					host_name = seat.name
 		if players < 4:
-			out.append({"code": room.code, "host": host_name, "players": players, "difficulty": room.difficulty})
+			out.append({"code": room.code, "host": host_name, "players": players, "difficulty": room.difficulty,
+					"mode": room.mode, "target": room.target})
 	if multiplayer.get_peers().has(peer):
 		_lobby.cl_rooms.rpc_id(peer, out)
 
@@ -760,6 +926,9 @@ func sv_leave() -> void:
 
 
 func _peer_left(id: int) -> void:
+	_accounts.erase(id)
+	_ranked_set_queue(id, false, {})
+	_modes_peers.erase(id)
 	_chat_peers.erase(id)
 	_chat_last.erase(id)
 	if serving:
@@ -811,9 +980,14 @@ func _run_match(room: Dictionary) -> void:
 	while not room.dead:
 		await _run_hand(room)
 		if room.dead:
-			return
-		if room.scores[0] >= TARGET_SCORE or room.scores[1] >= TARGET_SCORE:
 			break
+		if room.scores[0] >= room.target or room.scores[1] >= room.target:
+			break
+	if room.get("ranked", false):
+		await _ranked_finish(room)
+		return
+	if room.dead:
+		return
 	# Fin de la partida: la sala vuelve a la espera para poder jugar otra, y los
 	# asientos de quienes se fueron quedan libres.
 	room.started = false
@@ -828,6 +1002,7 @@ func _run_match(room: Dictionary) -> void:
 func _run_hand(room: Dictionary) -> void:
 	room.hand_no += 1
 	var st := State.new()
+	st.mode = room.mode
 	st.deal(_rng)
 	var opening: bool = room.starter < 0
 	if opening:
@@ -847,7 +1022,8 @@ func _run_hand(room: Dictionary) -> void:
 			# Cada jugador recibe solo sus propias fichas.
 			_to(peer, "cl_event", [{"type": "hand_start", "you": i, "hand": st.hands[i].duplicate(),
 					"starter": room.starter, "opening": opening, "scores": room.scores.duplicate(),
-					"hand_no": room.hand_no, "seats": seats, "difficulty": room.difficulty}])
+					"hand_no": room.hand_no, "seats": seats, "difficulty": room.difficulty,
+					"mode": room.mode, "target": room.target}])
 	# Tiempo para la animación de revolver y repartir.
 	await _pause(5.2)
 	while not st.is_over() and not room.dead:
@@ -895,8 +1071,9 @@ func _run_hand(room: Dictionary) -> void:
 	_broadcast(room, {"type": "hand_end", "hands": hands, "out": st.out_player, "blocked": st.blocked,
 			"scores": room.scores.duplicate()})
 	if dedicated:
-		print("[sala %s] mano %d: equipo %d +%d -> %s" % [room.code, room.hand_no, res.team, res.points, str(room.scores)])
-	if room.scores[0] >= TARGET_SCORE or room.scores[1] >= TARGET_SCORE:
+		print("[sala %s] mano %d (%s, a %d): equipo %d +%d -> %s" % [room.code, room.hand_no,
+				State.MODE_NAMES[room.mode], room.target, res.team, res.points, str(room.scores)])
+	if room.scores[0] >= room.target or room.scores[1] >= room.target:
 		return
 	# Espera a que todos pulsen "Siguiente mano" (con un límite por si alguien no lo hace).
 	var t0 := Time.get_ticks_msec()
@@ -924,3 +1101,145 @@ func _cpu_move(st: State, seat: int, difficulty: int) -> int:
 	if spent < 0.8:
 		await _pause(0.8 - spent)
 	return box[0]
+
+
+# -------------------------------------------------------------- ranked (servidor)
+
+## Cuenta del jugador: la carga (o la crea) y se la manda.
+func _ranked_hello(peer: int, token: String, player_name: String) -> void:
+	if not dedicated or _cloud == null or token.length() < 16 or token.length() > 64:
+		return
+	var rec := await _cloud.load_player(token, _clean_name(player_name))
+	if rec.is_empty() or not multiplayer.get_peers().has(peer):
+		return
+	rec["token"] = token
+	_accounts[peer] = rec
+	_ranked.cl_ranked_profile.rpc_id(peer, Ranked.public_view(rec))
+
+
+func _ranked_set_queue(peer: int, on: bool, look: Dictionary) -> void:
+	for i in range(_queue.size() - 1, -1, -1):
+		if _queue[i].peer == peer:
+			_queue.remove_at(i)
+	if on and _accounts.has(peer) and _room_of(peer).is_empty():
+		_queue.append({"peer": peer, "since": Time.get_ticks_msec(), "look": _clean_look(look)})
+		_queue_timer = 0.0
+	elif not on and multiplayer.get_peers().has(peer):
+		_ranked.cl_ranked_queue.rpc_id(peer, {"on": false})
+
+
+## Cada segundo: con 4 en la cola empieza una partida; si el que más espera
+## lleva Ranked.FILL_AFTER segundos, empieza con los que haya y CPU.
+func _ranked_tick() -> void:
+	for i in range(_queue.size() - 1, -1, -1):
+		if not multiplayer.get_peers().has(_queue[i].peer):
+			_queue.remove_at(i)
+	if _queue.is_empty():
+		return
+	var waited := (Time.get_ticks_msec() - int(_queue[0].since)) / 1000
+	if _queue.size() >= 4:
+		_ranked_start(_queue.slice(0, 4))
+		_queue = _queue.slice(4)
+	elif waited >= Ranked.FILL_AFTER:
+		_ranked_start(_queue.duplicate())
+		_queue.clear()
+	for q: Dictionary in _queue:
+		_ranked.cl_ranked_queue.rpc_id(q.peer, {"on": true, "waiting": _queue.size(),
+				"secs": (Time.get_ticks_msec() - int(q.since)) / 1000, "fill": Ranked.FILL_AFTER})
+
+
+## Sala de ranked con estos jugadores. Se reparten para que las parejas queden
+## igualadas: con 4, el primero y el último por PR contra los dos del medio;
+## con 2, uno en cada pareja; con 3, dos contra uno más una CPU.
+func _ranked_start(entries: Array) -> void:
+	entries.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return int(_accounts[a.peer].pr) > int(_accounts[b.peer].pr))
+	var seat_order: Array = [[0], [0, 1], [0, 1, 2], [0, 1, 3, 2]][entries.size() - 1]
+	var seats: Array = []
+	for i in 4:
+		seats.append(_cpu_seat())
+	var total_pr := 0
+	var players: Array = []
+	var code := _new_code()
+	for k in entries.size():
+		var peer: int = entries[k].peer
+		var rec: Dictionary = _accounts[peer]
+		var seat: int = seat_order[k]
+		_leave_room(peer)
+		seats[seat] = {"peer": peer, "name": str(rec.name), "look": entries[k].look, "token": str(rec.token)}
+		peer_room[peer] = code
+		total_pr += int(rec.pr)
+		players.append({"seat": seat, "token": str(rec.token), "peer": peer})
+	var division := Ranked.division(total_pr / entries.size())
+	var room := {"code": code, "seats": seats, "difficulty": Ranked.DIV_DIFFICULTY[division], "host": entries[0].peer,
+			"started": true, "dead": false, "state": null, "scores": [0, 0], "starter": -1,
+			"hand_no": 0, "pending": NO_MOVE, "ready": {}, "history": [], "public": false,
+			"mode": State.CLASSIC, "target": Ranked.TARGET, "ranked": true, "players": players}
+	rooms[code] = room
+	print("[ranked %s] empieza con %d personas" % [code, entries.size()])
+	_push_room(room)
+	_run_match(room)
+
+
+## Fin de una partida de ranked: gana la pareja que llegó a la meta. Quien se
+## salió (su asiento lo jugó una CPU hasta el final) pierde. Se guardan los PR,
+## se avisa a cada uno y la sala se cierra.
+func _ranked_finish(room: Dictionary) -> void:
+	var winner := 0 if room.scores[0] >= room.target else (1 if room.scores[1] >= room.target else -1)
+	for pl: Dictionary in room.players:
+		var seat: Dictionary = room.seats[pl.seat]
+		var present: bool = seat.peer != 0 and not room.dead
+		var won: bool = present and winner == pl.seat % 2
+		var rec := {}
+		if present and _accounts.has(seat.peer):
+			rec = _accounts[seat.peer]
+		else:
+			rec = await _cloud.load_player(pl.token, "")
+		if rec.is_empty():
+			continue
+		rec["token"] = pl.token
+		var res := Ranked.report(rec, won)
+		res["won"] = won
+		res["rank"] = Ranked.rank_name(int(rec.pr))
+		res["profile"] = Ranked.public_view(rec)
+		if present and multiplayer.get_peers().has(seat.peer):
+			_accounts[seat.peer] = rec
+			_ranked.cl_ranked_result.rpc_id(seat.peer, res)
+		await _cloud.save_player(rec)
+		print("[ranked %s] %s %+d PR -> %d" % [room.code, rec.name, res.delta, rec.pr])
+	room.dead = true
+	rooms.erase(room.code)
+	for seat: Dictionary in room.seats:
+		if seat.peer != 0:
+			peer_room.erase(seat.peer)
+
+
+func _ranked_send_top(peer: int) -> void:
+	if not dedicated or _cloud == null:
+		return
+	var rows: Array = await _cloud.top()
+	var me := -1
+	var my_id: String = str(_accounts.get(peer, {}).get("id", ""))
+	var out: Array = []
+	for i in rows.size():
+		if str(rows[i].id) == my_id:
+			me = i
+		out.append({"name": str(rows[i].name), "pr": int(rows[i].pr)})
+	if multiplayer.get_peers().has(peer):
+		_ranked.cl_ranked_top.rpc_id(peer, out, me)
+
+
+## Cobra el premio de temporada pendiente: el servidor lo pone a 0 y el
+## teléfono suma las monedas (el monedero aún vive en el teléfono).
+func _ranked_claim(peer: int) -> void:
+	if not _accounts.has(peer):
+		return
+	var rec: Dictionary = _accounts[peer]
+	var coins := int(rec.reward)
+	if coins <= 0:
+		return
+	rec.reward = 0
+	await _cloud.save_player(rec)
+	if multiplayer.get_peers().has(peer):
+		_ranked.cl_ranked_claimed.rpc_id(peer, coins)
+		_ranked.cl_ranked_profile.rpc_id(peer, Ranked.public_view(rec))

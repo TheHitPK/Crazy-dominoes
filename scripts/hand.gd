@@ -42,12 +42,17 @@ var rack := false:
 	set(v):
 		rack = v
 		refresh()
-## Largo que ocupan las fichas; el atril crece y se encoge con él.
+## Largo del atril: el de las fichas, con un mínimo (ver set_count).
 var span := 0.0:
 	set(v):
 		span = v
 		refresh()
 const RACK_WOOD := Color(0.45, 0.26, 0.13)
+## Fichas que caben en el atril más corto (de 7 al empezar).
+const RACK_MIN := 5
+
+## Largo máximo del abanico (0 = sin límite).
+var max_span := 0.0
 
 var _front: Node2D
 var _tw: Tween
@@ -66,9 +71,22 @@ func step() -> float:
 	return TILE_W * k + gap
 
 
+## Separación entre fichas cuando hay n: la normal o, si no caben en
+## max_span (1 contra 1 tras robar mucho), más juntas y solapadas.
+func step_for(n: int) -> float:
+	if max_span <= 0.0 or n < 2:
+		return step()
+	return minf(step(), (max_span - TILE_W * k) / (n - 1))
+
+
+## Largo que ocupan n fichas.
+func width_for(n: int) -> float:
+	return step_for(n) * (n - 1) + TILE_W * k if n > 0 else 0.0
+
+
 ## Posición y giro globales de la ficha i de n.
 func slot(i: int, n: int) -> Array:
-	var x := (i - (n - 1) * 0.5) * step()
+	var x := (i - (n - 1) * 0.5) * step_for(n)
 	return [to_global(Vector2(x, x * x * arc)), global_rotation + x * fan]
 
 
@@ -76,9 +94,11 @@ func set_count(n: int) -> void:
 	if _tw != null and _tw.is_valid():
 		_tw.kill()
 	_tw = create_tween().set_parallel(true).set_trans(Tween.TRANS_CUBIC).set_ease(Tween.EASE_OUT)
-	_tw.tween_property(self, "spread", step() * n * 0.27 if n >= 4 else 0.0, 0.35)
+	_tw.tween_property(self, "spread", (width_for(n) + gap) * 0.27 if n >= 4 else 0.0, 0.35)
 	_tw.tween_property(self, "two", 1.0 if n >= 4 else 0.0, 0.35)
-	_tw.tween_property(self, "span", step() * n - gap if n > 0 else 0.0, 0.35)
+	# El atril encoge un poco al quedar menos fichas, pero nunca por debajo del
+	# largo de RACK_MIN fichas: si no, con una o dos fichas quedaba diminuto.
+	_tw.tween_property(self, "span", maxf(width_for(n), width_for(RACK_MIN)), 0.35)
 	_tw.tween_property(self, "modulate:a", 1.0 if n > 0 else 0.0, 0.35)
 
 
@@ -340,22 +360,36 @@ func _draw_front() -> void:
 
 # ------------------------------------------------------------------- atril
 
-## Franja del atril de y0 a y1 (en u) con los extremos redondeados. Sigue la
-## misma curva que el abanico de fichas (ver slot).
+## Esquinas del atril (en u): pequeñas, para que parezca una tabla cortada y no una píldora.
+const RACK_CORNER := 0.08
+
+
+## Franja del atril de y0 a y1 (en u) con los extremos rectos y las esquinas
+## apenas redondeadas. Sigue la misma curva que el abanico de fichas (ver slot).
 func _rack_strip(c: CanvasItem, half: float, y0: float, y1: float, col: Color) -> void:
 	var u := TILE_W * k
+	var r := minf(RACK_CORNER * u, (y1 - y0) * 0.5 * u)
+	var end_y := half * half * arc
 	var pts := PackedVector2Array()
 	var steps := 12
+	# Canto de arriba, esquinas de la derecha, canto de abajo y esquinas de la izquierda.
 	for i in steps + 1:
-		var x := lerpf(-half, half, float(i) / steps)
+		var x := lerpf(-half + r, half - r, float(i) / steps)
 		pts.append(Vector2(x, x * x * arc + y0 * u))
+	_rack_corner(pts, Vector2(half - r, end_y + y0 * u + r), r, -PI * 0.5)
+	_rack_corner(pts, Vector2(half - r, end_y + y1 * u - r), r, 0.0)
 	for i in range(steps, -1, -1):
-		var x := lerpf(-half, half, float(i) / steps)
+		var x := lerpf(-half + r, half - r, float(i) / steps)
 		pts.append(Vector2(x, x * x * arc + y1 * u))
+	_rack_corner(pts, Vector2(-half + r, end_y + y1 * u - r), r, PI * 0.5)
+	_rack_corner(pts, Vector2(-half + r, end_y + y0 * u + r), r, PI)
 	c.draw_colored_polygon(pts, col)
-	var r := (y1 - y0) * 0.5 * u
-	for x in [-half, half]:
-		c.draw_circle(Vector2(x, x * x * arc + (y0 + y1) * 0.5 * u), r, col, true, -1.0, true)
+
+
+## Cuarto de círculo de una esquina del atril, desde el ángulo `from`.
+func _rack_corner(pts: PackedVector2Array, center: Vector2, r: float, from: float) -> void:
+	for i in 5:
+		pts.append(center + Vector2.from_angle(from + PI * 0.5 * i / 4.0) * r)
 
 
 ## Línea a lo largo del atril (vetas, filo, filete del color del equipo).
@@ -372,7 +406,8 @@ func _rack_line(c: CanvasItem, half: float, y: float, col: Color, width: float) 
 ## entre ficha y ficha.
 func _draw_rack_back() -> void:
 	var u := TILE_W * k
-	var half := span * 0.5 + 0.14 * u
+	# Sin los extremos redondos, la tabla se alarga un poco para que siga asomando.
+	var half := span * 0.5 + 0.3 * u
 	_rack_strip(self, half + 0.04 * u, -0.66, 1.0, RACK_WOOD.darkened(0.55))
 	_rack_strip(self, half, -0.62, 0.96, RACK_WOOD.darkened(0.25))
 	_rack_line(self, half - 0.2 * u, -0.5, Color(RACK_WOOD.lightened(0.25), 0.6), maxf(1.0, 0.04 * u))
@@ -382,7 +417,7 @@ func _draw_rack_back() -> void:
 ## un par de vetas y un filete del color del equipo.
 func _draw_rack_front() -> void:
 	var u := TILE_W * k
-	var half := span * 0.5 + 0.3 * u
+	var half := span * 0.5 + 0.42 * u
 	var e := _edge()
 	_rack_strip(_front, half, 1.02, 1.5, Color(0, 0, 0, 0.3))
 	_rack_strip(_front, half + e, 0.9 - e / u, 1.4 + e / u, RACK_WOOD.darkened(0.5))

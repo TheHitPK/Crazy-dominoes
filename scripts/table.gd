@@ -21,6 +21,8 @@ const RIM := 44.0
 const CUP_R := 38.0
 const CUP_INSET := 60.0
 ## Acabados: superficie, borde, veta, si es tapete, nudos y ancho de las juntas.
+## "marble": losa de piedra con vetas. "night": tapete de noche con estrellas
+## y rayos (Catatumbo).
 const STYLES := [
 	{"wood": Color(0.64, 0.41, 0.2), "rim": Color(0.27, 0.14, 0.07), "grain": Color(0.25, 0.12, 0.04), "felt": false, "knots": 4, "gap": 2.0},
 	{"wood": Color(0.36, 0.22, 0.12), "rim": Color(0.14, 0.08, 0.05), "grain": Color(0.1, 0.05, 0.02), "felt": false, "knots": 3, "gap": 2.0},
@@ -28,6 +30,12 @@ const STYLES := [
 	{"wood": Color(0.55, 0.2, 0.12), "rim": Color(0.25, 0.07, 0.05), "grain": Color(0.2, 0.04, 0.02), "felt": false, "knots": 2, "gap": 2.0},
 	{"wood": Color(0.1, 0.42, 0.24), "rim": Color(0.27, 0.14, 0.07), "grain": Color(0.02, 0.15, 0.08), "felt": true, "knots": 0, "gap": 0.0},
 	{"wood": Color(0.52, 0.46, 0.38), "rim": Color(0.25, 0.2, 0.16), "grain": Color(0.2, 0.17, 0.13), "felt": false, "knots": 11, "gap": 5.0},
+	{"wood": Color(0.1, 0.27, 0.52), "rim": Color(0.2, 0.12, 0.07), "grain": Color(0.02, 0.08, 0.2), "felt": true, "knots": 0, "gap": 0.0},
+	{"wood": Color(0.55, 0.07, 0.1), "rim": Color(0.12, 0.08, 0.06), "grain": Color(0.2, 0.02, 0.03), "felt": true, "knots": 0, "gap": 0.0},
+	{"wood": Color(0.84, 0.74, 0.46), "rim": Color(0.45, 0.36, 0.17), "grain": Color(0.5, 0.42, 0.2), "felt": false, "knots": 0, "gap": 3.5},
+	{"wood": Color(0.13, 0.1, 0.09), "rim": Color(0.62, 0.46, 0.16), "grain": Color(0.35, 0.27, 0.12), "felt": false, "knots": 2, "gap": 2.0},
+	{"wood": Color(0.09, 0.09, 0.1), "rim": Color(0.2, 0.19, 0.2), "grain": Color(0.85, 0.72, 0.4), "felt": false, "knots": 0, "gap": 0.0, "marble": true},
+	{"wood": Color(0.15, 0.08, 0.28), "rim": Color(0.07, 0.05, 0.13), "grain": Color(0.75, 0.55, 1.0), "felt": true, "knots": 0, "gap": 0.0, "night": true},
 ]
 
 
@@ -55,6 +63,16 @@ const CACHE_MARGIN := 40.0
 
 var _viewport: SubViewport
 var _painter: Node2D
+## Acabado de esta mesa si no es el elegido en los ajustes (miniaturas de la
+## tienda). Con -1, el de los ajustes.
+var style_index := -1
+
+
+## Acabado que dibuja esta mesa.
+func _st() -> Dictionary:
+	if style_index >= 0:
+		return STYLES[clampi(style_index, 0, STYLES.size() - 1)]
+	return style()
 
 
 func _ready() -> void:
@@ -82,6 +100,7 @@ func _build_cache() -> void:
 	# El pintor es otra mesa igual, pero que dibuja de verdad.
 	_painter = (get_script() as GDScript).new()
 	_painter.cached = false
+	_painter.style_index = style_index
 	_painter.position = -region.position * k
 	_painter.scale = Vector2(k, k)
 	_viewport.add_child(_painter)
@@ -98,7 +117,7 @@ func _draw() -> void:
 	if cached:
 		# Lo que se ve es la imagen; fuera de ella, el color de fondo de la ventana.
 		return
-	var st := style()
+	var st := _st()
 	var rim: Color = st.rim
 	var rng := RandomNumberGenerator.new()
 	rng.seed = 20261005
@@ -114,8 +133,12 @@ func _draw() -> void:
 	body.shadow_size = 22
 	body.draw(ci, outer())
 
-	if st.felt:
+	if st.get("marble", false):
+		_draw_marble(inner, st, rng)
+	elif st.felt:
 		_draw_felt(inner, st, rng)
+		if st.get("night", false):
+			_draw_night(inner, st, rng)
 	else:
 		# Las tablas corren a lo largo de la mesa: se dibujan "tumbadas" con los
 		# ejes intercambiados.
@@ -201,6 +224,37 @@ func _draw_felt(r: Rect2, st: Dictionary, rng: RandomNumberGenerator) -> void:
 		var d := Vector2(rng.randf_range(-4, 4), rng.randf_range(-4, 4))
 		draw_line(p, p + d, Color(1, 1, 1, 0.045) if i % 2 == 0 else Color(0, 0, 0, 0.07), 1.0)
 	_outline(r.grow(-16.0), 2, Color(1.0, 0.95, 0.7, 0.16), 10)
+
+
+## Losa de mármol: fondo liso y vetas finas que la cruzan en diagonal.
+func _draw_marble(r: Rect2, st: Dictionary, rng: RandomNumberGenerator) -> void:
+	draw_rect(r, st.wood)
+	var vein: Color = st.grain
+	for i in 9:
+		var p := Vector2(rng.randf_range(r.position.x - 100.0, r.end.x), r.position.y)
+		var pts := PackedVector2Array()
+		while p.y < r.end.y:
+			pts.append(p)
+			p += Vector2(rng.randf_range(-20.0, 50.0), rng.randf_range(30.0, 70.0))
+		pts.append(p)
+		draw_polyline(pts, Color(vein, rng.randf_range(0.12, 0.35)), rng.randf_range(1.0, 2.6), true)
+		draw_polyline(pts, Color(1, 1, 1, 0.05), rng.randf_range(4.0, 8.0), true)
+
+
+## Noche del Catatumbo sobre el tapete: estrellas y dos rayos tenues.
+func _draw_night(r: Rect2, st: Dictionary, rng: RandomNumberGenerator) -> void:
+	for i in 160:
+		var p := Vector2(rng.randf_range(r.position.x, r.end.x), rng.randf_range(r.position.y, r.end.y))
+		draw_circle(p, rng.randf_range(0.8, 2.0), Color(1, 1, 1, rng.randf_range(0.15, 0.5)))
+	var light: Color = st.grain
+	for k in 2:
+		var p := Vector2(r.position.x + r.size.x * (0.25 + 0.5 * k), r.position.y + 60.0)
+		var pts := PackedVector2Array([p])
+		for q in 10:
+			p += Vector2(rng.randf_range(-40.0, 40.0), r.size.y * 0.07)
+			pts.append(p)
+		draw_polyline(pts, Color(light, 0.12), 9.0, true)
+		draw_polyline(pts, Color(light, 0.35), 2.5, true)
 
 
 func _draw_vignette(r: Rect2) -> void:

@@ -11,11 +11,17 @@ config_version=5
 [application]
 
 config/name="Crazy Dominoes"
+config/version="1.0.0"
+config/icon="res://assets/brand/icon.png"
+boot_splash/bg_color=Color(0.039, 0.039, 0.125, 1)
+boot_splash/image="res://assets/brand/intro_fondo.png"
+boot_splash/stretch_mode=4
+boot_splash/minimum_display_time=300
 run/main_scene="res://scenes/main.tscn"
 config/quit_on_go_back=false
 config/features=PackedStringArray("4.7", "GL Compatibility")
-run/low_processor_mode=true
 run/max_fps=60
+run/low_processor_mode=true
 
 [display]
 
