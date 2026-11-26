@@ -59,6 +59,11 @@ const RTT_EVERY := 2.0
 const RTT_LOST_MS := 7000
 ## Orden en que se sientan los que llegan: primero de compañero del anfitrión.
 const JOIN_ORDER := [2, 1, 3, 0]
+## Segundos que una sala en línea sigue abierta cuando se quedó sin nadie: en
+## Android, minimizar el juego corta la conexión, y así da tiempo a volver a
+## entrar con el mismo código (ver Online.rejoin_code). Mientras está vacía, la
+## partida se queda quieta.
+const ROOM_GRACE := 180.0
 
 # --- cliente
 ## Eventos de partida pendientes de procesar, en orden de llegada.
@@ -714,6 +719,7 @@ func sv_join(code: String, player_name: String, look: Dictionary, token: String)
 		if room.seats[i].peer == 0:
 			room.seats[i] = {"peer": id, "name": _clean_name(player_name), "look": _clean_look(look), "token": token}
 			peer_room[id] = key
+			_adopt_host(room, id)
 			_push_room(room)
 			return
 	_to(id, "cl_error", ["La sala está llena."])
@@ -725,6 +731,7 @@ func _rejoin(room: Dictionary, seat_index: int, id: int) -> void:
 	var seat: Dictionary = room.seats[seat_index]
 	seat.peer = id
 	peer_room[id] = room.code
+	_adopt_host(room, id)
 	# No tiene que pulsar "Siguiente mano" de una mano que no vio terminar.
 	room.ready[id] = true
 	var st: State = room.state
@@ -836,7 +843,7 @@ func _send_public_rooms(peer: int) -> void:
 				players += 1
 				if seat.peer == room.host:
 					host_name = seat.name
-		if players < 4:
+		if players > 0 and players < 4:
 			out.append({"code": room.code, "host": host_name, "players": players, "difficulty": room.difficulty,
 					"mode": room.mode, "target": room.target})
 	if multiplayer.get_peers().has(peer):
@@ -955,6 +962,11 @@ func _leave_room(id: int) -> void:
 			next_host = s.peer
 			break
 	if next_host == 0:
+		if room.code != LAN_CODE and not room.get("ranked", false):
+			if dedicated:
+				print("[sala %s] vacía: se espera %d s por si vuelven" % [room.code, int(ROOM_GRACE)])
+			get_tree().create_timer(ROOM_GRACE).timeout.connect(_close_if_empty.bind(room))
+			return
 		room.dead = true
 		rooms.erase(room.code)
 		if dedicated:
@@ -965,6 +977,33 @@ func _leave_room(id: int) -> void:
 	if room.started:
 		_broadcast(room, {"type": "left", "seat": seat, "name": gone})
 	_push_room(room)
+
+
+## Cierra una sala que siguió vacía todo el tiempo de espera (ROOM_GRACE).
+func _close_if_empty(room: Dictionary) -> void:
+	if room.dead or _humans(room) > 0:
+		return
+	room.dead = true
+	if rooms.get(room.code) == room:
+		rooms.erase(room.code)
+	if dedicated:
+		print("[sala %s] cerrada (nadie volvió)" % room.code)
+
+
+func _humans(room: Dictionary) -> int:
+	var n := 0
+	for seat: Dictionary in room.seats:
+		if seat.peer != 0:
+			n += 1
+	return n
+
+
+## Si el anfitrión ya no está en la sala (se fue y quedó vacía), lo es quien entra.
+func _adopt_host(room: Dictionary, id: int) -> void:
+	for seat: Dictionary in room.seats:
+		if seat.peer != 0 and seat.peer == room.host:
+			return
+	room.host = id
 
 
 # ------------------------------------------------------------ partida (servidor)
@@ -1027,6 +1066,11 @@ func _run_hand(room: Dictionary) -> void:
 	# Tiempo para la animación de revolver y repartir.
 	await _pause(5.2)
 	while not st.is_over() and not room.dead:
+		# Sala vacía (todos minimizaron o se les cortó): se espera a que vuelvan.
+		while not room.dead and _humans(room) == 0:
+			await _pause(0.5)
+		if room.dead:
+			return
 		var seat := st.turn
 		# Se limpia antes de avisar del turno: el anfitrión recibe el aviso al
 		# instante y su respuesta puede llegar antes de la línea siguiente.

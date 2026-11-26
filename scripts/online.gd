@@ -40,12 +40,21 @@ var notice := ""
 var start_ranked := false
 ## Pruebas: dirección del servidor en lugar de la de Render (--server-addr).
 static var server_override := ""
+## Código de la sala en línea en la que estoy. Si se corta la conexión (en
+## Android, al minimizar el juego), se vuelve a entrar sola con él; el servidor
+## guarda la sala vacía un rato (Net.ROOM_GRACE) y, con la partida empezada, mi
+## asiento. Se borra al salir de la sala a propósito.
+static var rejoin_code := ""
+## Abrir la pantalla volviendo ya a la sala de rejoin_code (lo pide main.gd).
+var rejoin := false
+var _rejoining := false
 var _ranked_panel: RankedPanel
 
 var _entry: Control
 var _public: Control
 var _lobby: Control
 var _code: LineEdit
+var _exit_btn: FancyButton
 var _me_avatar: Avatar
 var _me_name: Label
 var _profile: ProfilePanel
@@ -89,12 +98,13 @@ func _ready() -> void:
 	_build_lobby()
 	_status = _label(self, "", UI.CAPTION, UI.WARN, Rect2(40, 1000, 640, 84))
 	_status.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	var exit_btn := _button(self, "Volver", UI.NEUTRAL, Rect2(215, 1100, 290, UI.TOUCH), UI.BUTTON)
-	exit_btn.pressed.connect(_leave)
+	# En la sala, "Salir" va en la fila de Invitar y Chat (ver _build_lobby).
+	_exit_btn = _button(self, "Volver", UI.NEUTRAL, Rect2(215, 1100, 290, UI.TOUCH), UI.BUTTON)
+	_exit_btn.pressed.connect(_leave)
 
 	net.room_changed.connect(_on_room)
 	net.failed.connect(_on_failed)
-	net.closed.connect(_on_failed.bind("Se perdió la conexión con la sala."))
+	net.closed.connect(_on_closed)
 	net.game_event.connect(_on_game_event)
 	net.public_rooms.connect(_on_public_rooms)
 	net.chat_message.connect(_on_chat)
@@ -122,6 +132,8 @@ func _ready() -> void:
 		_ranked_panel.start(_server_address(), _player_name())
 	elif net.room_info.is_empty():
 		_show(_entry)
+		if rejoin and rejoin_code != "":
+			_try_rejoin()
 	else:
 		_on_room(net.room_info)
 
@@ -157,6 +169,8 @@ func _show(view: Control) -> void:
 		_chat.close()
 	for v in [_entry, _public, _lobby]:
 		v.visible = v == view
+	if _exit_btn != null:
+		_exit_btn.visible = view != _lobby
 	if view == _entry:
 		_started = false
 
@@ -369,9 +383,12 @@ func _build_lobby() -> void:
 	_start_btn = _button(_lobby, "Empezar partida", UI.PRIMARY, Rect2(110, 936, 500, 96), 38)
 	_start_btn.pressed.connect(func() -> void: net.send("sv_start"))
 	_wait_lbl = _label(_lobby, "Esperando a que el anfitrión empiece…", UI.BODY, UI.CREAM, Rect2(0, 950, 720, 70))
-	_chat_btn = _button(_lobby, "Chat", UI.ACCENT, Rect2(530, 1100, 160, UI.TOUCH), UI.BUTTON)
+	# Fila de abajo: salir de la sala, invitar y chat.
+	var out := _button(_lobby, "Salir", UI.NEUTRAL, Rect2(30, 1100, 180, UI.TOUCH), UI.BUTTON)
+	out.pressed.connect(_leave)
+	_chat_btn = _button(_lobby, "Chat", UI.ACCENT, Rect2(500, 1100, 190, UI.TOUCH), UI.BUTTON)
 	# Invitar: abre WhatsApp con el código de la sala y el enlace del juego.
-	_invite_btn = _button(_lobby, "Invitar por WhatsApp", Color(0.15, 0.68, 0.38), Rect2(30, 1100, 480, UI.TOUCH), 28)
+	_invite_btn = _button(_lobby, "Invitar", Color(0.15, 0.68, 0.38), Rect2(224, 1100, 262, UI.TOUCH), UI.BUTTON)
 	_invite_btn.set_icon("share", 40)
 	_invite_btn.pressed.connect(_invite)
 	_chat_btn.pressed.connect(_open_chat)
@@ -401,6 +418,8 @@ func _on_room(info: Dictionary) -> void:
 	_status.text = ""
 	net.listen_lan(false)
 	var lan: bool = info.code == Net.LAN_CODE
+	_rejoining = false
+	rejoin_code = "" if lan else str(info.code)
 	if not lan and Settings.profile.last_code != info.code:
 		# Se recuerda la sala: si me salgo sin querer, el código ya está escrito para volver.
 		Settings.profile.last_code = info.code
@@ -465,12 +484,57 @@ func _open_chat() -> void:
 	_chat.open()
 
 
+## Mensaje del chat: se ve en la sala sin abrir el chat, como un bocadillo (o
+## un emoji grande) junto al asiento de quien lo mandó, también los míos.
 func _on_chat(msg: Dictionary) -> void:
+	if _lobby.visible and not net.room_info.is_empty():
+		_lobby_bubble(posmod(int(msg.seat) - int(net.room_info.get("you", 0)), 4), msg)
 	if not _chat.visible and int(msg.seat) != int(net.room_info.get("you", -1)):
 		_unread += 1
 		_chat_btn.text = "Chat %d" % mini(_unread, 9)
 		if sfx != null:
 			sfx.play("click", 1.5)
+
+
+func _lobby_bubble(v: int, msg: Dictionary) -> void:
+	var seat: Rect2 = SEAT_RECTS[v]
+	var node: Control
+	if int(msg.kind) == Chat.EMOJI:
+		var tex := Chat.emoji(str(msg.text))
+		if tex == null:
+			return
+		var img := TextureRect.new()
+		img.texture = tex
+		img.expand_mode = TextureRect.EXPAND_IGNORE_SIZE
+		img.size = Vector2(96, 96)
+		node = img
+	else:
+		var text := "%s: %s" % [msg.name, msg.text]
+		var wide := text.length() * 15.0 + 44.0
+		var size := Vector2(clampf(wide, 160.0, 460.0), 58.0 if wide <= 460.0 else 96.0)
+		var pn := Panel.new()
+		var sb := StyleBoxFlat.new()
+		sb.bg_color = Color(0.98, 0.96, 0.9)
+		sb.border_color = UI.GOLD
+		sb.set_border_width_all(3)
+		sb.set_corner_radius_all(18)
+		pn.add_theme_stylebox_override("panel", sb)
+		pn.size = size
+		var lb := _label(pn, text, UI.CAPTION, Color(0.15, 0.1, 0.06), Rect2(10, 0, size.x - 20, size.y))
+		lb.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+		node = pn
+	node.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	# Encima del asiento, sin salirse de la pantalla.
+	var x := clampf(seat.get_center().x - node.size.x * 0.5, 10.0, 710.0 - node.size.x)
+	node.position = Vector2(x, seat.position.y - node.size.y - 6.0)
+	node.pivot_offset = node.size * 0.5
+	node.scale = Vector2(0.2, 0.2)
+	_lobby.add_child(node)
+	var tw := node.create_tween()
+	tw.tween_property(node, "scale", Vector2.ONE, 0.25).set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
+	tw.tween_interval(2.8)
+	tw.tween_property(node, "modulate:a", 0.0, 0.3)
+	tw.tween_callback(node.queue_free)
 
 
 func _cycle_difficulty() -> void:
@@ -505,12 +569,34 @@ func _on_game_event() -> void:
 
 
 func _on_failed(message: String) -> void:
+	if _rejoining:
+		# No se pudo volver (la sala ya se cerró): no se insiste más.
+		_rejoining = false
+		rejoin_code = ""
 	_show(_entry)
 	_status.text = message
 
 
+func _on_closed() -> void:
+	if rejoin_code != "" and not _rejoining:
+		_try_rejoin()
+	else:
+		_on_failed("Se perdió la conexión con la sala.")
+
+
+## Vuelve a entrar en la sala de la que me sacó un corte de conexión.
+func _try_rejoin() -> void:
+	_rejoining = true
+	_show(_entry)
+	_code.text = rejoin_code
+	_join(_server_address(), rejoin_code)
+	_status.text = "Se cortó la conexión. Volviendo a tu sala…"
+
+
 func _leave() -> void:
 	_click()
+	rejoin_code = ""
+	_rejoining = false
 	if _lobby.visible or _public.visible:
 		net.leave()
 		_status.text = ""
