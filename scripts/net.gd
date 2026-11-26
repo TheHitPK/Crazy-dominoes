@@ -64,6 +64,12 @@ const JOIN_ORDER := [2, 1, 3, 0]
 ## entrar con el mismo código (ver Online.rejoin_code). Mientras está vacía, la
 ## partida se queda quieta.
 const ROOM_GRACE := 180.0
+## Segundos de cada jugador para jugar en línea. Se mandan en el aviso de turno
+## ("limit"): el teléfono muestra la cuenta atrás y, al acabarse, juega solo
+## (game.gd, _turn_clock). Si aun así no llega nada (teléfono colgado o
+## versión vieja sin reloj), el servidor espera TURN_GRACE más y juega la CPU.
+const TURN_SECONDS := 25
+const TURN_GRACE := 6
 
 # --- cliente
 ## Eventos de partida pendientes de procesar, en orden de llegada.
@@ -1075,11 +1081,13 @@ func _run_hand(room: Dictionary) -> void:
 		# Se limpia antes de avisar del turno: el anfitrión recibe el aviso al
 		# instante y su respuesta puede llegar antes de la línea siguiente.
 		room.pending = NO_MOVE
-		_broadcast(room, {"type": "turn", "seat": seat})
+		_broadcast(room, {"type": "turn", "seat": seat, "limit": TURN_SECONDS})
 		var moves: Array = st.legal_moves(seat)
 		var move := -1
 		if room.seats[seat].peer != 0:
-			while room.pending == NO_MOVE and room.seats[seat].peer != 0 and not room.dead:
+			var deadline := Time.get_ticks_msec() + (TURN_SECONDS + TURN_GRACE) * 1000
+			while room.pending == NO_MOVE and room.seats[seat].peer != 0 and not room.dead \
+					and Time.get_ticks_msec() < deadline:
 				await get_tree().process_frame
 			if room.dead:
 				return

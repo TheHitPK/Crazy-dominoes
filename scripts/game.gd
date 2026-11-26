@@ -6,6 +6,12 @@ signal exit_to_menu
 ## Partida en red terminada: volver a la sala para jugar otra.
 signal back_to_room
 signal _human_done(move: int)
+## Cuenta atrás del turno en línea (ver _turn_clock).
+var _clock: Label
+var _clock_left := 0.0
+var _clock_seat := -1
+## Asientos (vistos desde el mío) que juega una persona: solo ahí sale el reloj.
+var _human_seat := [true, false, false, false]
 signal _panel_done(action: String)
 
 const State = preload("res://scripts/domino_state.gd")
@@ -31,8 +37,9 @@ const Ads = preload("res://scripts/ads.gd")
 const BOARD_SCALE := 1.25
 ## Radio (en unidades de pantalla) dentro del cual un toque cuenta como acierto.
 const TOUCH_RADIUS := 80.0
-## Formas de revolver las fichas antes de repartir (ver _shuffle_target).
-const SHUFFLES := ["sopa", "remolino", "montones", "ola", "explosion"]
+## Segundos que dura el revuelto antes de repartir (ver _shuffle_animation).
+## En línea, revuelto y reparto tienen que caber en la pausa del servidor (5,2 s).
+const SHUFFLE_TIME := 2.0
 ## Segundos que se muestra que no tengo jugada antes de pasar solo.
 const PASS_PAUSE := 0.9
 ## Cuánto hay que mover el dedo sobre una ficha para que cuente como arrastre y no como toque.
@@ -184,9 +191,6 @@ var _press_pos := Vector2.ZERO
 ## Ficha que se está arrastrando y extremos en los que puede caer.
 var _drag: Tile
 var _drag_sides: Array = []
-var _last_shuffle := -1
-## Pruebas: fuerza una forma de revolver (índice en SHUFFLES); -1 = al azar.
-var force_shuffle := -1
 var _last: Tile
 var _ai_task := -1
 var _banner_tw: Tween
@@ -821,6 +825,7 @@ func _net_seats(ev: Dictionary) -> void:
 	for v in 4:
 		var seat: Dictionary = ev.seats[(v + my_seat) % 4]
 		var human: bool = seat.human
+		_human_seat[v] = human
 		# "away": su dueño se salió y puede volver; mientras, juega una CPU.
 		var away: bool = seat.get("away", false)
 		if v == 0:
@@ -845,10 +850,12 @@ func _net_loop() -> void:
 			"hand_start":
 				await _net_hand_start(ev)
 			"turn":
-				await _net_turn(_vis(ev.seat))
+				await _net_turn(_vis(ev.seat), int(ev.get("limit", 0)))
 			"move":
 				await _net_move(_vis(ev.seat), ev.move)
 			"pass":
+				_clock_left = 0.0
+				_clock_tick(0.0)
 				state.turn = _vis(ev.seat)
 				await _announce_pass(_vis(ev.seat))
 			"hand_end":
@@ -974,8 +981,9 @@ func _team_scores(server_scores: Array) -> Array:
 	return [int(server_scores[mine]), int(server_scores[1 - mine])]
 
 
-func _net_turn(v: int) -> void:
+func _net_turn(v: int, limit: int = 0) -> void:
 	_set_active(v)
+	_turn_clock(v, limit)
 	if v != 0:
 		return
 	var moves: Array = state.legal_moves(0)
@@ -990,7 +998,62 @@ func _net_turn(v: int) -> void:
 		net.send("sv_move", [mv])
 
 
+## Cuenta atrás del turno en línea (Net.TURN_SECONDS) sobre la placa de quien
+## juega. Si es mi turno y se acaba, juego la ficha que elegiría una CPU fácil
+## (o paso), para no dejar a los demás esperando.
+func _turn_clock(v: int, limit: int) -> void:
+	_clock_left = float(limit) if v == 0 or _human_seat[v] else 0.0
+	_clock_seat = v
+	if _clock == null:
+		_clock = _label(hud, "", UI.CAPTION, Color.WHITE, Rect2(0, 0, 64, 44))
+		_clock.add_theme_font_override("font", UISkin.heavy())
+		var sb := StyleBoxFlat.new()
+		sb.bg_color = Color(0.1, 0.06, 0.03, 0.9)
+		sb.border_color = GOLD
+		sb.set_border_width_all(3)
+		sb.set_corner_radius_all(22)
+		_clock.add_theme_stylebox_override("normal", sb)
+		_clock.pivot_offset = _clock.size * 0.5
+		var tick := Timer.new()
+		tick.wait_time = 0.25
+		tick.autostart = true
+		tick.timeout.connect(_clock_tick.bind(0.25))
+		add_child(tick)
+	_clock_tick(0.0)
+
+
+func _clock_tick(dt: float) -> void:
+	if _clock == null:
+		return
+	if _clock_left <= 0.0 or _clock_seat < 0 or state == null or state.is_over():
+		_clock.visible = false
+		return
+	var before := ceili(_clock_left)
+	_clock_left -= dt
+	var secs := maxi(ceili(_clock_left), 0)
+	var plate: Panel = plates[_clock_seat]
+	_clock.visible = true
+	_clock.text = str(secs)
+	_clock.position = plate.position + Vector2(plate.size.x - 34.0, -24.0)
+	_clock.add_theme_color_override("font_color", Color(1.0, 0.35, 0.3) if secs <= 5 else Color.WHITE)
+	if secs != before and secs <= 5 and secs > 0:
+		_clock.scale = Vector2(1.3, 1.3)
+		create_tween().tween_property(_clock, "scale", Vector2.ONE, 0.2)
+		if _clock_seat == 0 and _awaiting:
+			_play("click", 1.8)
+	if _clock_left <= 0.0:
+		_clock.visible = false
+		if _clock_seat == 0 and _awaiting and not _choices.is_empty():
+			_bubble(0, "Se acabó tu tiempo", 1.2)
+			var mv: int = AI.choose(state, 0, AI.EASY, rng.randi())
+			if not _choices.has(mv):
+				mv = _choices[0]
+			_human_done.emit(mv)
+
+
 func _net_move(v: int, mv: int) -> void:
+	_clock_left = 0.0
+	_clock_tick(0.0)
 	if v != 0:
 		_reveal(hand_tiles[v][rng.randi_range(0, hand_tiles[v].size() - 1)], v, mv >> 1)
 	state.turn = v
@@ -1108,67 +1171,51 @@ func _animate_deal() -> void:
 	await _wait(idx * 0.05 + pool_tiles.size() * 0.03 + 0.55)
 
 
-## Revuelve las fichas boca abajo antes de repartir. Cada mano usa una forma
-## distinta de revolver, al azar y sin repetir la de la mano anterior.
+## Revuelto clásico: las fichas boca abajo giran en dos remolinos, como si
+## dos palmas las movieran en círculos sobre la mesa (la izquierda en un
+## sentido y la derecha en el otro). A mitad, la mitad de las fichas pasa a la
+## otra mano y así se mezclan; al final las manos frenan y las fichas quedan
+## revueltas donde caen. Cada ficha se recoloca en cada imagen (no a saltos),
+## por eso se ve continuo.
 func _shuffle_animation() -> void:
 	await get_tree().process_frame
-	var pick := rng.randi_range(0, SHUFFLES.size() - 1)
-	if pick == _last_shuffle:
-		pick = (pick + 1) % SHUFFLES.size()
-	if force_shuffle >= 0:
-		pick = force_shuffle % SHUFFLES.size()
-	_last_shuffle = pick
-	var order: Array = tiles.values()
-	State.shuffle(order, rng)
 	var c := play_rect.get_center()
-	var n := order.size()
-	# Remolino y ola van ficha a ficha; el resto, todas a la vez.
-	var stagger := 0.008 if SHUFFLES[pick] in ["remolino", "ola"] else 0.0
-	for step in 3:
-		_play("shuffle", rng.randf_range(0.9, 1.1))
-		for i in n:
-			var t: Tile = order[i]
-			var target := _shuffle_target(SHUFFLES[pick], step, i, n, c, t)
-			t.fly_to(target[0], target[1], 0.75, 0.3, i * stagger)
-		await _wait(0.33 + stagger * n)
+	var plan: Array = []
+	var i := 0
+	for t: Tile in tiles.values():
+		plan.append({"t": t, "from": t.position, "rot": t.rotation, "hand": i % 2,
+				"r": rng.randf_range(22.0, 112.0), "a": rng.randf_range(0.0, TAU),
+				"wob": rng.randf_range(0.6, 1.5), "ph": rng.randf_range(0.0, TAU),
+				"spin": rng.randf_range(-2.4, 2.4), "swap": rng.randf() < 0.5})
+		i += 1
+	for k in 3:
+		get_tree().create_timer(k * SHUFFLE_TIME / 3.0).timeout.connect(
+				_play.bind("shuffle", rng.randf_range(0.9, 1.1)))
+	var tw := create_tween()
+	tw.tween_method(_shuffle_frame.bind(plan, c), 0.0, 1.0, SHUFFLE_TIME)
+	await tw.finished
 
 
-## Posición y giro de la ficha i (de n) en el paso `step` (0..2) de un revuelto.
-func _shuffle_target(kind: String, step: int, i: int, n: int, c: Vector2, t: Tile) -> Array:
-	var jitter := Vector2(rng.randf_range(-6, 6), rng.randf_range(-6, 6))
-	match kind:
-		"remolino":
-			# Giran en anillos alrededor del centro, cada vez más cerrados.
-			var radius := (70.0 + (i % 3) * 45.0) * (1.0 - step * 0.2)
-			var angle := float(i) / n * TAU + step * 1.1
-			return [c + Vector2.from_angle(angle) * radius + jitter, angle + PI * 0.5]
-		"montones":
-			# Dos montones a los lados que se intercalan en uno solo y se abren.
-			if step == 0:
-				var side := -1.0 if i % 2 == 0 else 1.0
-				return [c + Vector2(side * 130.0, 60.0 - i * 2.5) + jitter, rng.randf_range(-0.08, 0.08)]
-			if step == 1:
-				return [c + Vector2(rng.randf_range(-14, 14), 60.0 - i * 4.5), rng.randf_range(-0.12, 0.12)]
-			return [c + Vector2(rng.randf_range(-110, 110), rng.randf_range(-110, 110)), rng.randf_range(-PI, PI)]
-		"ola":
-			# En filas y columnas, con una ola que las recorre.
-			var col := i % 7
-			var row := i / 7
-			var base := c + Vector2((col - 3) * 50.0, (row - 1.5) * 92.0)
-			var wave := sin(col * 0.9 + step * 1.7)
-			if step == 2:
-				return [c + Vector2(rng.randf_range(-140, 140), rng.randf_range(-140, 140)), rng.randf_range(-PI, PI)]
-			return [base + Vector2(0, wave * 30.0), wave * 0.35]
-		"explosion":
-			# Se juntan en el centro, salen disparadas en círculo y caen revueltas.
-			if step == 0:
-				return [c + jitter * 1.5, rng.randf_range(-PI, PI)]
-			if step == 1:
-				var angle := float(i) / n * TAU
-				return [c + Vector2.from_angle(angle) * 185.0, angle]
-			return [c + Vector2(rng.randf_range(-150, 150), rng.randf_range(-150, 150)), rng.randf_range(-PI, PI)]
-	# "sopa": las manos las mueven sin orden por el centro de la mesa.
-	return [c + Vector2(rng.randf_range(-150, 150), rng.randf_range(-150, 150)), t.rotation + rng.randf_range(-2.0, 2.0)]
+## Una imagen del revuelto; `k` va de 0 a 1 a lo largo de SHUFFLE_TIME.
+func _shuffle_frame(k: float, plan: Array, c: Vector2) -> void:
+	# Las palmas arrancan rápido y frenan al final (2 vueltas en total).
+	var e := 1.0 - (1.0 - k) * (1.0 - k)
+	var phase := e * TAU * 2.0
+	var palms := [c + Vector2(-72.0, 0.0) + Vector2.from_angle(phase) * 52.0,
+			c + Vector2(72.0, 0.0) + Vector2.from_angle(PI - phase) * 52.0]
+	# Al empezar, cada ficha entra en el remolino desde donde estaba.
+	var enter := smoothstep(0.0, 0.2, k)
+	var mix := smoothstep(0.38, 0.62, k)
+	for d: Dictionary in plan:
+		var t: Tile = d.t
+		if not is_instance_valid(t):
+			continue
+		var h: int = d.hand
+		var center: Vector2 = palms[h].lerp(palms[1 - h], mix) if d.swap else palms[h]
+		var a: float = d.a + (1.0 if h == 0 else -1.0) * phase * 0.9
+		var r: float = d.r * (1.0 + 0.25 * sin(phase * float(d.wob) + float(d.ph)))
+		t.position = (d.from as Vector2).lerp(center + Vector2.from_angle(a) * r, enter)
+		t.rotation = float(d.rot) + float(d.spin) * e
 
 
 func _layout_hand(p: int, dur: float) -> void:
