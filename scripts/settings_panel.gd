@@ -7,7 +7,7 @@ const Settings = preload("res://scripts/settings.gd")
 const W := 600.0
 ## [clave, texto]. Las de sonido van en Settings.audio; "show_hands", en Settings.data.
 const OPTIONS := [["music", "Música"], ["sfx", "Efectos de sonido"], ["pass_voice", "Audios de voz"],
-		["vibrate", "Vibración"], ["show_hands", "Manos visibles"]]
+		["vibrate", "Vibración"], ["show_hands", "Manos visibles"], ["lite", "Modo ligero"]]
 const ROW := 84.0
 
 var _switches := {}
@@ -50,6 +50,8 @@ func refresh() -> void:
 func _is_on(key: String) -> bool:
 	if key == "show_hands":
 		return Settings.data.show_hands != 0
+	if key == "lite":
+		return Settings.lite_mode()
 	return Settings.audio[key] != 0
 
 
@@ -57,6 +59,10 @@ func _toggle(key: String) -> void:
 	var v := 0 if _is_on(key) else 1
 	if key == "show_hands":
 		Settings.data.show_hands = v
+	elif key == "lite":
+		# Una vez tocado, manda lo elegido y no la detección automática.
+		Settings.data.lite = v
+		Settings.apply_performance()
 	else:
 		Settings.audio[key] = v
 	Settings.save()

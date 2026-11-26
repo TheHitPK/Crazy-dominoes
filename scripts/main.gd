@@ -99,8 +99,6 @@ func _ready() -> void:
 		net.serve_dedicated(int(args.get("--port", env_port if env_port != "" else str(Net.PORT))))
 		return
 
-	if OS.has_feature("web"):
-		AI.think_ms = 160
 	sfx = Sfx.new()
 	add_child(sfx)
 	var layer := CanvasLayer.new()
@@ -122,6 +120,7 @@ func _ready() -> void:
 	net.closed.connect(_on_net_closed)
 
 	Settings.load_settings()
+	Settings.apply_performance()
 	Wallet.load_wallet()
 	Wallet.sanitize_look()
 	Stats.load_stats()
@@ -234,6 +233,14 @@ func _center_content() -> float:
 
 
 func _notification(what: int) -> void:
+	# Al minimizar, se suelta el campo de texto en uso y se esconde el teclado:
+	# si no, al volver Android deja a la vista la caja de texto del teclado (una
+	# franja blanca encima del juego).
+	if what == NOTIFICATION_APPLICATION_PAUSED or what == NOTIFICATION_APPLICATION_FOCUS_OUT:
+		if is_inside_tree():
+			get_viewport().gui_release_focus()
+		if DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD):
+			DisplayServer.virtual_keyboard_hide()
 	# Botón "atrás" de Android: de la partida o la sala al menú, y del menú fuera.
 	if what == NOTIFICATION_WM_GO_BACK_REQUEST:
 		if current is Game and current.net == null:
@@ -246,15 +253,17 @@ func _notification(what: int) -> void:
 
 
 func _to_menu() -> void:
+	Online.rejoin_code = ""
 	net.ranked_mode = false
 	net.leave()
 	_switch(_make_menu)
 
 
 func _on_net_closed() -> void:
-	# El anfitrión cerró la sala o se cayó la red en mitad de la partida.
+	# Se cayó la red en mitad de la partida (o se minimizó el juego en Android):
+	# la pantalla en línea vuelve sola a la sala si sabe su código.
 	if current is Game:
-		_switch(_make_online.bind("Se perdió la conexión con la sala."))
+		_switch(_make_online.bind("Se perdió la conexión con la sala.", false, true))
 
 
 func _make_menu(panel: String = "") -> Node:
@@ -269,8 +278,9 @@ func _make_menu(panel: String = "") -> Node:
 	return m
 
 
-func _make_online(notice: String, ranked: bool = false) -> Node:
+func _make_online(notice: String, ranked: bool = false, rejoin: bool = false) -> Node:
 	var o: Online = Online.new()
+	o.rejoin = rejoin
 	o.sfx = sfx
 	o.net = net
 	o.notice = notice

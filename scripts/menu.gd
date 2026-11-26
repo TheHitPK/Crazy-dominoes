@@ -894,7 +894,8 @@ func _spawn_floating_tiles() -> void:
 		var tmp: Vector2i = set[i]
 		set[i] = set[j]
 		set[j] = tmp
-	for k in spots.size():
+	# En modo ligero, la mitad: cada ficha que flota se anima en cada imagen.
+	for k in (spots.size() / 2 if Settings.lite_mode() else spots.size()):
 		var pos: Vector2 = spots[k]
 		var t: Tile = Tile.new()
 		t.set_values(set[k].x, set[k].y)

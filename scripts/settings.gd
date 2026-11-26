@@ -2,6 +2,7 @@ extends RefCounted
 ## Personalización del jugador. Se guarda en user://settings.cfg.
 
 const Avatar = preload("res://scripts/avatar.gd")
+const AI = preload("res://scripts/domino_ai.gd")
 
 const PATH := "user://settings.cfg"
 
@@ -27,8 +28,10 @@ const PHOTO_PATH := "user://avatar.png"
 ## "show_hands": 1 = se dibujan las manos que sujetan las fichas (las mías y las
 ## de los demás); 0 = las fichas se paran en un atril de madera. Es una preferencia de mi pantalla:
 ## no cambia cómo me ven los otros jugadores.
+## "lite": modo ligero para teléfonos modestos (ver lite_mode): -1 = lo decide
+## el juego según la memoria y los núcleos del teléfono; 0 = no; 1 = sí.
 static var data := {"skin": 1, "hand_style": 0, "accent": 0, "tile_style": 0, "table_style": 0, "drink": 0,
-		"show_hands": 1, "avatar": 0, "avatar_photo": 0}
+		"show_hands": 1, "avatar": 0, "avatar_photo": 0, "lite": -1}
 ## Datos para jugar con amigos: nombre y, a distancia, dirección del servidor.
 ## "player_id" es una clave privada de esta instalación (ver player_token) y
 ## "last_code", la última sala en línea, para volver a ella con un toque.
@@ -81,6 +84,34 @@ static func player_token() -> String:
 		profile.player_id = Crypto.new().generate_random_bytes(16).hex_encode()
 		save()
 	return profile.player_id
+
+
+## Por debajo de esta memoria (o con 4 núcleos o menos) el teléfono se trata
+## como modesto y el modo ligero se activa solo.
+const LITE_RAM := 3.5 * 1024.0 * 1024.0 * 1024.0
+
+
+## Modo ligero: 30 imágenes por segundo en vez de 60 (la mitad de trabajo para
+## el procesador y menos batería), la CPU piensa menos rato y el menú lleva
+## menos fichas flotando. Se nota poco en un juego de mesa.
+static func lite_mode() -> bool:
+	if int(data.lite) >= 0:
+		return int(data.lite) == 1
+	if not OS.has_feature("mobile"):
+		return false
+	var ram := float(OS.get_memory_info().get("physical", -1))
+	return OS.get_processor_count() <= 4 or (ram > 0.0 and ram < LITE_RAM)
+
+
+## Aplica el modo ligero (al arrancar y al cambiarlo en Ajustes).
+static func apply_performance() -> void:
+	var lite := lite_mode()
+	Engine.max_fps = 30 if lite else 60
+	# En la web no hay hilos: la CPU piensa en el hilo principal y tiene que ser breve.
+	if OS.has_feature("web"):
+		AI.think_ms = 160
+	else:
+		AI.think_ms = 250 if lite else 450
 
 
 ## Longitud máxima del nombre (el servidor también lo recorta: net.gd, _clean_name).

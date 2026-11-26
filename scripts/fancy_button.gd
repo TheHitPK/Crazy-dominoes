@@ -12,6 +12,11 @@ var _frame: NinePatchRect
 
 
 func setup(txt: String, color: Color, font_size: int = 24) -> void:
+	# El texto nunca ensancha el botón: si no cabe, _draw le baja la letra. Sin
+	# esto, un texto que no cabía ("Chat 1" en un botón estrecho) hacía crecer
+	# el botón mientras el ajuste encogía la letra, una y otra vez, y el juego
+	# se quedaba congelado.
+	clip_text = true
 	text = txt
 	focus_mode = Control.FOCUS_NONE
 	mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
