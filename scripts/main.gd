@@ -25,7 +25,6 @@ extends Node
 ##   --coins=N       fija el saldo de monedas (se guarda)
 ##   --paid          con --play o --auto, la partida cobra y paga como una mesa del menú
 ##   --options       con --play o --auto, abre el panel de ajustes de la partida
-##   --shuffle=N     con --play o --auto, fuerza la forma de revolver N (0..4)
 ##   --online        abre directamente la pantalla "Jugar con amigos"
 ##   --ranked        abre directamente la pantalla del ranked en línea
 ##   --server-addr=D usa la dirección D en lugar del servidor de Render (pruebas)
@@ -39,6 +38,8 @@ extends Node
 ##   --net-create=DIR      crea la sala TEST en un servidor dedicado
 ##   --net-join=DIR        entra en la sala de DIR (wifi) o en TEST (dedicado, con --net-code)
 ##   --net-code=TEST       código de sala para --net-join
+##   --net-idle            en la partida de prueba no juega solo: deja que se acabe el tiempo del turno
+##   --perf                escribe cada 2 s las imágenes por segundo, llamadas de dibujo y tiempo de CPU
 ##   --net-humans=N        el anfitrión empieza cuando haya N personas (por defecto 2)
 ##   --net-name=NOMBRE     nombre del jugador de prueba
 ##   --net-token=CLAVE     clave del jugador (la misma clave recupera su asiento al volver)
@@ -91,6 +92,8 @@ func _ready() -> void:
 	var args := {}
 	for arg in OS.get_cmdline_user_args():
 		args[arg.get_slice("=", 0)] = arg.get_slice("=", 1) if "=" in arg else ""
+	if args.has("--perf"):
+		_perf_every = 2.0
 	if args.has("--speed"):
 		Engine.time_scale = float(args["--speed"])
 	if args.has("--server"):
@@ -159,8 +162,6 @@ func _ready() -> void:
 		if args.has("--paid"):
 			Wallet.pay_entry(diff, Settings.rules.bet)
 		_switch(_make_game.bind(diff, args.has("--auto"), args.has("--paid")))
-		if args.has("--shuffle"):
-			current.force_shuffle = int(args["--shuffle"])
 		if args.has("--options"):
 			current.call_deferred("_show_options")
 	elif args.has("--online") or args.has("--ranked"):
@@ -230,6 +231,35 @@ func _center_content() -> float:
 	free = free.max(Vector2.ZERO)
 	get_viewport().canvas_transform = Transform2D(0.0, free)
 	return free.y
+
+
+## Alto del teclado del teléfono en el fotograma anterior (ver _process).
+var _keyboard_h := 0
+## Pruebas de rendimiento (--perf): cada cuántos segundos se escriben las medidas.
+var _perf_every := 0.0
+var _perf_t := 0.0
+
+
+func _process(_delta: float) -> void:
+	# Si el teclado se cierra (botón atrás) con un campo de texto aún en uso,
+	# se suelta el campo: si no, Android deja a la vista la caja de texto del
+	# teclado, una franja blanca encima del juego.
+	if _perf_every > 0.0:
+		_perf_t += _delta
+		if _perf_t >= _perf_every:
+			_perf_t = 0.0
+			print("[perf] fps=%d  dibujos=%d  objetos=%d  cpu=%.1f ms  nodos=%d" % [
+					Engine.get_frames_per_second(),
+					Performance.get_monitor(Performance.RENDER_TOTAL_DRAW_CALLS_IN_FRAME),
+					Performance.get_monitor(Performance.RENDER_TOTAL_OBJECTS_IN_FRAME),
+					Performance.get_monitor(Performance.TIME_PROCESS) * 1000.0,
+					Performance.get_monitor(Performance.OBJECT_NODE_COUNT)])
+	if not DisplayServer.has_feature(DisplayServer.FEATURE_VIRTUAL_KEYBOARD):
+		return
+	var h := DisplayServer.virtual_keyboard_get_height()
+	if h == 0 and _keyboard_h > 0 and get_viewport().gui_get_focus_owner() is LineEdit:
+		get_viewport().gui_release_focus()
+	_keyboard_h = h
 
 
 func _notification(what: int) -> void:
@@ -417,7 +447,7 @@ func _net_test(args: Dictionary) -> void:
 					get_tree().create_timer(4.0, true, false, true).timeout.connect(func() -> void: net.chat(1, "0")))
 			if args.has("--chat"):
 				get_tree().create_timer(7.0, true, false, true).timeout.connect(func() -> void: current._open_chat())
-			_switch(_make_net_game.bind(true)))
+			_switch(_make_net_game.bind(not args.has("--net-idle"))))
 	if args.has("--net-ranked"):
 		# El token del ranked tiene que ser largo (el servidor rechaza los cortos).
 		token = token.sha256_text().left(32)

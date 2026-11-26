@@ -58,8 +58,30 @@ var _front: Node2D
 var _tw: Tween
 var _box := StyleBoxFlat.new()
 
+## Rendimiento: cada mano tiene unas 120 piezas (dedos, uñas, pliegues...), y
+## cada pieza suavizada es una llamada de dibujo. Con cuatro jugadores eran
+## ~950 por imagen, demasiado para la GPU de un teléfono de gama media. Por eso
+## cada mano se pinta una sola vez en una imagen (como las caras de las fichas,
+## ver tile.gd) y luego se dibuja esa imagen. Hasta que está lista, se dibuja
+## a mano como antes.
+## Caja de una mano alrededor de su centro (en u) y escala de la imagen.
+const BAKE_BOX := Rect2(-1.45, -1.85, 2.9, 6.0)
+const BAKE_SCALE := 1.5
+## Imágenes ya pintadas: clave -> {tex, ready, viewport}. Compartidas.
+static var _baked := {}
+static var _bake_holder: Node
+static var _waiting: Array = []
+## Pintor de una imagen: una sola mano en x = 0, del lado _p_side; detrás de
+## las fichas (palma y dedos) o, con _p_front, delante (el pulgar).
+var painter := false
+var _p_side := 1.0
+var _p_front := false
+
 
 func _ready() -> void:
+	if painter:
+		_front = self
+		return
 	_front = Node2D.new()
 	_front.z_index = 2
 	add_child(_front)
@@ -211,20 +233,99 @@ func _nail(c: CanvasItem, tip: Vector2, dir: Vector2, w: float, al: float, thumb
 	c.draw_line(base + shine, end + shine - dir * w * 0.2, Color(1, 1, 1, 0.55 * al), maxf(1.0, 1.4 * k), true)
 
 
-# -------------------------------------------------------- detrás de las fichas
-
 func _draw() -> void:
+	if painter:
+		if _p_front:
+			_front_hand(0.0, _p_side, 1.0)
+		else:
+			_back_hand(0.0, _p_side, 1.0)
+		return
 	if rack:
 		_draw_rack_back()
 		return
+	for h in _hands():
+		if h[2] >= 0.02 and not _draw_baked(self, h[0], h[1], h[2], false):
+			_back_hand(h[0], h[1], h[2])
+
+
+# ------------------------------------------------------------ imágenes pintadas
+
+func _bake_key(s: float, front: bool) -> String:
+	return "%d|%s|%s|%s|%d|%d|%.3f" % [style, skin.to_html(), sleeve.to_html(), accent.to_html(),
+			int(s), int(front), k]
+
+
+## Dibuja la mano ya pintada en `c`; si aún no está, la encarga y devuelve false.
+func _draw_baked(c: CanvasItem, hx: float, s: float, al: float, front: bool) -> bool:
+	var key := _bake_key(s, front)
+	var entry: Dictionary = _baked.get(key, {})
+	if entry.get("ready", false):
+		var u := TILE_W * k
+		var box := Rect2(BAKE_BOX.position * u + Vector2(hx, 0.0), BAKE_BOX.size * u)
+		c.draw_texture_rect(entry.tex, box, false, Color(1, 1, 1, al))
+		return true
+	if entry.is_empty():
+		_bake.call_deferred(s, front)
+	if not _waiting.has(self):
+		_waiting.append(self)
+	return false
+
+
+func _bake(s: float, front: bool) -> void:
+	var key := _bake_key(s, front)
+	if _baked.has(key) or not is_inside_tree():
+		return
+	if _baked.size() > 48:
+		# Muchas combinaciones (otros jugadores, cambios de color): se empieza de nuevo.
+		for e: Dictionary in _baked.values():
+			if is_instance_valid(e.viewport):
+				e.viewport.queue_free()
+		_baked.clear()
+	var tree := get_tree()
+	if _bake_holder == null or not is_instance_valid(_bake_holder):
+		_bake_holder = Node.new()
+		_bake_holder.name = "HandImages"
+		tree.root.add_child(_bake_holder)
+	var u := TILE_W * k
+	var vp := SubViewport.new()
+	vp.transparent_bg = true
+	vp.disable_3d = true
+	vp.size = Vector2i((BAKE_BOX.size * u * BAKE_SCALE).ceil())
+	vp.render_target_update_mode = SubViewport.UPDATE_ONCE
+	var p: Node2D = (get_script() as GDScript).new()
+	p.painter = true
+	p._p_side = s
+	p._p_front = front
+	p.k = k
+	p.skin = skin
+	p.sleeve = sleeve
+	p.style = style
+	p.accent = accent
+	p.position = -BAKE_BOX.position * u * BAKE_SCALE
+	p.scale = Vector2.ONE * BAKE_SCALE
+	vp.add_child(p)
+	_bake_holder.add_child(vp)
+	_baked[key] = {"tex": vp.get_texture(), "ready": false, "viewport": vp}
+	tree.create_timer(0.08, true, false, true).timeout.connect(_baked_ready.bind(key))
+
+
+static func _baked_ready(key: String) -> void:
+	if not _baked.has(key):
+		return
+	_baked[key].ready = true
+	for h in _waiting:
+		if is_instance_valid(h):
+			h.refresh()
+	_waiting.clear()
+
+
+# -------------------------------------------------------- detrás de las fichas
+
+## Palma, dedos y manga de una mano (centro hx, lado s), sin pintar.
+func _back_hand(hx: float, s: float, al: float) -> void:
 	var u := TILE_W * k
 	var e := _edge()
-	for h in _hands():
-		var hx: float = h[0]
-		var s: float = h[1]
-		var al: float = h[2]
-		if al < 0.02:
-			continue
+	if true:
 		var fill_c := Color(fill(), al)
 		var line_c := Color(_outline_color(), al)
 		_draw_sleeve(hx, u, al)
@@ -328,14 +429,16 @@ func _draw_front() -> void:
 	if rack:
 		_draw_rack_front()
 		return
+	for h in _hands():
+		if h[2] >= 0.02 and not _draw_baked(_front, h[0], h[1], h[2], true):
+			_front_hand(h[0], h[1], h[2])
+
+
+## Pulgar de una mano (centro hx, lado s), sin pintar.
+func _front_hand(hx: float, s: float, al: float) -> void:
 	var u := TILE_W * k
 	var e := _edge()
-	for h in _hands():
-		var hx: float = h[0]
-		var s: float = h[1]
-		var al: float = h[2]
-		if al < 0.02:
-			continue
+	if true:
 		# Pulgar en dos falanges. Sale del monte del pulgar, abierto hacia fuera,
 		# y solo pisa el canto inferior de la ficha: no tapa los puntos.
 		var root := Vector2(hx + s * 0.9 * u, 1.72 * u)
